@@ -51,7 +51,8 @@ stateDiagram-v2
 |---|---|---|
 | 风扇开/关 | 看板 · BtnA 双击 | `setPower(0/1)` |
 | Turbo 开/提前退出 | 看板 · BtnA 三击 | `setTurbo(bool)` |
-| 无级调速 | 看板 · BtnA 按住 → 倾斜 → 松开 | `setSpeed(pct)` |
+| 无级调速 | 看板 · BtnA 按住 → 上举/下摆 → 松开 | `setSpeed(pct)` |
+| 升档/降档 | 看板 · BtnA 按住 → 右摇/左摇 | `setPower(gear±1)` |
 | 风速微调 | 菜单 → 风速 → BtnA 短按 -5% / 长按 +5% → BtnB 保存 | `setSpeed(pct)` |
 | 定时关机 | 菜单 → 定时 → BtnA 短按 -30min / 长按 +30min（0=取消）→ BtnB 保存 | `setTimerMinutes(min)` |
 | 自然风 | 菜单 → 自然风 → BtnA 短按切换 → BtnB 保存 | `setNatureWind(bool)` |
@@ -62,35 +63,78 @@ stateDiagram-v2
 
 **菜单项定义**（循环顺序）：`风速 → 定时 → 自然风 → Turbo → 灯光 → 返回`
 
-## 4. 手势模式设计
+## 4. 手势模式设计（v2：双通道）
+
+手势模式内（按住 BtnA）同时开放两条控制通道。**所有方向判定都在体感参考系中进行，不用设备绝对 XYZ**——校准见 §4.0：
+
+| 手势 | 信号性质 | 检测路径 | 动作 |
+|---|---|---|---|
+| 左摇 / 右摇 | 体感 right 轴 accel 瞬态脉冲（高频） | 基线差 + 峰值检测 | 降档 / 升档（`setPower(gear∓1)`，1-4 钳位） |
+| 上举 / 下摆 | 体感俯仰稳态变化（低频） | 重力投影差 + EMA 低通 + 速率映射 | 风速无级爬升/下降（`setSpeed`） |
+
+### 4.0 体感参考系校准（进入手势瞬间）
+
+方向取决于**抓握姿势**而非设备绝对轴向。用进入瞬间的重力向量建系：
+
+```
+g0    = 进入时 accel 滑动均值（设备系下的重力向量，定义体感"下"）
+L     = 设备长轴在设备系中的方向（硬件固定，真机一次性标定）
+down  = g0 / |g0|
+right = normalize(cross(L, down))   // 体感"右"
+fwd   = cross(down, right)          // 体感"前"
+```
+
+性质：设备倒置（旋转 180°）时 g0 翻转 → right 自动翻转，**方向语义跟着手走**。
+退化情形：设备完全竖直握持（L ∥ down）时 cross 无定义 → 沿用上一次的基；首次使用则屏幕提示"请稍倾斜握持"。
+
+判读规则：
+
+- **摇**：瞬态 accel `a_hp`，取 `s = a_hp · right`；要求 right 分量占优（|s| > |a_hp·fwd| 且 > |a_hp·down|），符号定左/右。
+- **举/摆**：`Δg = g_now - g0`（g_now 为低通后的当前重力），俯仰量度 `p = Δg · fwd`，上举为正。
 
 ```mermaid
 flowchart LR
-    A[BtnA 按住 >400ms] --> B[进入手势模式<br/>记录中性姿态 N]
-    B --> C{前 200ms}
-    C -->|pitch 变化大| D[锁 pitch 轴]
-    C -->|roll 变化大| E[锁 roll 轴]
-    D --> F
-    E --> F[30Hz 采样循环]
-    F --> G[atan2 算相对角 Δθ<br/>EMA 滤波 α=0.3]
-    G --> H[Δθ ±45° → 0-100%<br/>±5° 死区 + 钳位]
-    H --> I[屏幕实时显示大字号 %]
-    I --> J{变化≥2% 且<br/>距上次写≥150ms?}
-    J -->|是| K[setSpeed 入队]
-    J -->|否| F
+    A[BtnA 按住 >400ms] --> B[进入手势模式<br/>记录中性姿态 N + accel 基线]
+    B --> F[30Hz+ 采样循环]
+    F --> G{信号分离}
+    G -->|高通: ax-基线| H{峰值检测<br/>|Δax|>2.5 m/s²?}
+    H -->|首峰为负| I[左摇 → 降档]
+    H -->|首峰为正| J[右摇 → 升档]
+    I --> K[400ms 防连发]
+    J --> K
     K --> F
-    F --> L{BtnA 松开?}
-    L -->|否| F
-    L -->|是| M[补发终值 setSpeed<br/>退出回看板]
+    G -->|低通 EMA α=0.3| L[pitch 相对角 Δθ]
+    L --> M{±8° 死区}
+    M -->|上举 Δθ>0| N[speed += rate·Δt]
+    M -->|下摆 Δθ<0| O[speed -= rate·Δt]
+    N --> P[150ms 节流写 setSpeed]
+    O --> P
+    P --> F
+    F --> Q{BtnA 松开?}
+    Q -->|是| R[补发终值<br/>退出回看板]
 ```
 
-要点：
+### 4.1 摇（离散档位）
 
-1. **进入即校准**：中性点 = 进入瞬间姿态，不假设握姿。
-2. **自适应轴**：pitch/roll 谁变化大锁谁，两种转腕习惯通吃。角速度只用加速度计重力分量（`atan2`），不融合陀螺仪——静止调速场景陀螺仪只会引入漂移。
-3. **写节制**：本地显示零延迟，BLE 写入节流（≥2% 且 ≥150ms），松手补终值。风扇只认最后一锤子。
-4. **关机状态调速**：风扇固件自动先开 1 档再调速（协议 §8.9），UI 无需特判。
-5. **自然风互斥**：client 层已实现（先写 NATURE_WIND=00，隔 100ms 再写转速），UI 只需在 natureOn 时给个提示。
+- **检测**：瞬态 accel 在体感 right 轴的投影 `s`，|s| >2.5 m/s² 且 250ms 内回落到 0.8 m/s² 以下 = 一次有效摇；方向取 s 的符号。
+- **防连发**：触发后 400ms refractory，期间忽略一切峰值。
+- **边界**：1 档再左摇 / 4 档再右摇 → 屏幕闪一下提示，不下发。
+- **陀螺辅助（可选）**：角速度在 right 轴投影同号确认可降低误检，原型期先纯 accel，误检率高再加。
+- 阈值全部留成常量，真机调（第一次烧录带调试打印）。
+
+### 4.2 举/摆（连续风速，速率模式）
+
+- **不用绝对映射**（角度→%），用**速率模式**：`rate = (p/45°) × 30%/s`（p 为体感俯仰量度），即满倾时风速每秒变 30%，从 0 到 100% 约 3.3s；小角度 = 微调。
+- ±8° 等效死区防抖；松手时风扇保持当前值。
+- BLE 写节流不变：变化 ≥2% 且 ≥150ms；松手补终值。
+- **gear 与 speed 的语义关系**：风扇固件里换挡会把转速设为该档校准值（FFF7），之后 PWM 微调覆盖当前档转速——手势里两者独立下发即可，无需同步。
+
+### 4.3 原 v1 设计保留项
+
+- ~~自适应锁轴~~ → 已被体感参考系取代（更通用，且天然处理斜握）。
+- 不融合陀螺仪做姿态解算：摇/举检测都基于重力与瞬态加速度投影，静态场景陀螺积分只引入漂移（§4.1 的陀螺辅助仅作瞬时符号确认，不积分）。
+- 关机状态调速固件自动先开 1 档（协议 §8.9）；自然风互斥 client 层已处理。
+- 屏幕实时大字号显示 + 调试信息（原型期）。
 
 ## 5. UI 草案（135×240 竖屏，setRotation(0)，size1 字体 6×8 ≈ 22 列）
 
@@ -174,9 +218,9 @@ flowchart LR
 │        42 %          │  大字号实时值(size4)
 │ ▓▓▓▓▓▓▓░░░░░░░░░░░  │
 │                      │
-│ tilt: -12°  [roll]   │  调试信息(原型期保留)
+│ gear: 2   Δθ: -12°   │  调试信息(原型期保留)
 │                      │
-│ 倾斜调速             │
+│ 摇:换档  举/摆:调速  │
 │ 松开 BtnA 确认       │
 └──────────────────────┘
 ```
@@ -198,9 +242,67 @@ MenuItem menu[6] = { {"风速",PERCENT}, {"定时",MINUTES}, {"自然风",TOGGLE
 int menuIdx = 0;
 int adjustVal;              // 调节态暂存值（保存才下发）
 
-// 手势
-struct { float neutralPitch, neutralRoll; int axis; float ema;
-         uint8_t lastSent; uint32_t lastSentMs; } g;
+// 手势（v2：体感参考系双通道）
+struct Vec3 { float x, y, z; };
+struct {
+    Vec3 g0, right, fwd;       // 进入时建立的体感基
+    float emaP;                // 俯仰量度 EMA
+    float speedF;              // 速率模式浮点风速
+    uint32_t shakeLockMs;
+    uint8_t lastSent; uint32_t lastSentMs;
+} g;
+
+// ===== 手势 =====
+Vec3 dot_basis(Vec3 v);  // 返回 {v·right, v·fwd, v·down}，down = g0 归一化
+
+void enterGesture() {
+    g.g0 = avgAccel(100ms);              // 重力向量 = 体感"下"
+    Vec3 down = normalize(g.g0);
+    Vec3 L = deviceLongAxis();           // 真机标定的常量
+    if (fabs(dot(L, down)) > 0.95) {     // 竖直握持退化
+        if (!hasLastBasis()) { showHint("请稍倾斜握持"); return; }
+        restoreLastBasis();
+    } else {
+        g.right = normalize(cross(L, down));
+        g.fwd   = cross(down, g.right);
+    }
+    g.emaP = 0; g.speedF = snap.speed;
+    g.shakeLockMs = 0;
+    g.lastSent = snap.speed; g.lastSentMs = 0;
+    scr = GESTURE;
+}
+
+void gestureTick() {                      // loop 频率 ≳30Hz
+    Vec3 a = M5.Imu.getImuData().accel;
+    uint32_t now = millis();
+    Vec3 s = dot_basis(a);                // 体感系投影
+
+    // --- 通道1：摇（离散档位，体感 right）---
+    float hp = s.x - 0;                   // right 轴无重力分量，近似高通
+    if (now > g.shakeLockMs && fabs(hp) > 2.5f
+        && fabs(hp) > fabs(s.y) && fabs(hp) > fabs(s.z)) {  // right 占优
+        int gear = currentGear();
+        int next = constrain(gear + (hp > 0 ? 1 : -1), 1, 4);
+        if (next != gear) { cli.setPower(next); flashGear(next); }
+        else flashEdge();
+        g.shakeLockMs = now + 400;
+    }
+
+    // --- 通道2：举/摆（速率模式，体感俯仰）---
+    Vec3 dg = dot_basis(lowpass(a));      // 当前重力在体感系中的位置
+    float p = dg.y - dot_basis(g.g0).y;   // fwd 分量差 ≈ 俯仰量度
+    g.emaP += 0.3f * (p - g.emaP);
+    if (fabs(g.emaP) > deadzone8deg) {
+        float rate = (g.emaP / deg45) * 30.0f;   // %/s
+        g.speedF = constrain(g.speedF + rate * dt(), 0.0f, 100.0f);
+        uint8_t pct = uint8_t(g.speedF + 0.5f);
+        if (abs(pct - g.lastSent) >= 2 && now - g.lastSentMs >= 150) {
+            cli.setSpeed(pct);
+            g.lastSent = pct; g.lastSentMs = now;
+        }
+    }
+    if (M5.BtnA.wasReleased()) { cli.setSpeed(g.lastSent); scr = DASHBOARD; }
+}
 
 // ===== 主循环 =====
 void loop() {
@@ -246,27 +348,43 @@ void dispatchButtons() {
     }
 }
 
-// ===== 手势 =====
+// ===== 手势（v2 双通道）=====
 void enterGesture() {
     auto d = M5.Imu.getImuData();
-    g.neutralPitch = pitchOf(d); g.neutralRoll = rollOf(d);
-    g.axis = -1; g.ema = 0; g.lastSent = snap.speed; g.lastSentMs = 0;
+    g.neutralPitch = pitchOf(d);
+    g.baseAx = lateralAx(d);         // 横向分量基线
+    g.ema = 0; g.speedF = snap.speed;
+    g.shakeLockMs = 0;
+    g.lastSent = snap.speed; g.lastSentMs = 0;
     scr = GESTURE;
 }
-void gestureTick() {                        // loop 频率 ≳30Hz 即可
+void gestureTick() {                          // loop 频率 ≳30Hz
     auto d = M5.Imu.getImuData();
-    float dP = pitchOf(d) - g.neutralPitch;
-    float dR = rollOf(d)  - g.neutralRoll;
-    if (g.axis < 0 && millis() - enterMs > 200)
-        g.axis = fabs(dP) > fabs(dR) ? 0 : 1;   // 自适应锁轴
-    float ang = g.axis == 0 ? dP : dR;
-    g.ema += 0.3f * (ang - g.ema);              // EMA 滤波
-    if (fabs(g.ema) < 5) return;                // 死区
-    int pct = clamp(int((g.ema + 45) * 100 / 90), 0, 100);
-    if (abs(pct - g.lastSent) >= 2 && millis() - g.lastSentMs >= 150) {
-        cli.setSpeed(pct);                      // 节流写
-        g.lastSent = pct; g.lastSentMs = millis();
+    uint32_t now = millis();
+
+    // --- 通道1：摇（离散档位）---
+    float ax = lateralAx(d) - g.baseAx;       // 高通近似
+    if (now > g.shakeLockMs && fabs(ax) > 2.5f) {
+        int gear = currentGear();
+        int next = constrain(gear + (ax > 0 ? 1 : -1), 1, 4);
+        if (next != gear) { cli.setPower(next); flashGear(next); }
+        else flashEdge();                     // 到头提示
+        g.shakeLockMs = now + 400;            // refractory
     }
+
+    // --- 通道2：举/摆（速率模式调速）---
+    float dP = pitchOf(d) - g.neutralPitch;
+    g.ema += 0.3f * (dP - g.ema);             // EMA 低通
+    if (fabs(g.ema) > 8.0f) {                 // 死区
+        float rate = (g.ema / 45.0f) * 30.0f; // %/s
+        g.speedF = constrain(g.speedF + rate * dt(), 0.0f, 100.0f);
+        uint8_t pct = uint8_t(g.speedF + 0.5f);
+        if (abs(pct - g.lastSent) >= 2 && now - g.lastSentMs >= 150) {
+            cli.setSpeed(pct);                // 节流写
+            g.lastSent = pct; g.lastSentMs = now;
+        }
+    }
+    if (M5.BtnA.wasReleased()) { cli.setSpeed(g.lastSent); scr = DASHBOARD; }
 }
 
 // ===== 渲染（全部走 M5.Display，不实例化 M5GFX）=====
@@ -277,7 +395,7 @@ void render() { /* 按 scr 分派五个界面；数值变化才重绘对应区�
 
 1. **连击判定延迟**：`wasDeciedClickCount` 需等序列超时（≈400ms），三击总响应 ~1s，属正常，别当 bug。
 2. **M5.update() 必须每轮 loop 调用**，否则按键/IMU 静默失效（KB 铁律 #5）。
-3. **IMU 轴向未在真机核实**：`pitchOf/rollOf` 用哪个加速度分量，以 KB 中 BMI270 轴向图 + 真机打印为准，第一次烧录先做轴向校准打印。
+3. **IMU 轴向与设备长轴 L 未在真机核实**：`deviceLongAxis()` 常量与 BMI270 轴向图对照后真机打印标定，第一次烧录先做校准打印。
 4. **调节步长**：风速 ±5%、定时 ±30min（0=取消，上限 480）、灯光 0-4 循环。
 5. **Turbo 看板计时条总长**：需要 turboTime（FFF8），原型期可先用 199s 默认值，后续加一次连接后读取。
 6. **功耗**：遥控器场景后续可接 M5PM1 电源档（翻面朝下→L1 值守，拿起 IMU 唤醒），属二期，不影响本设计。
