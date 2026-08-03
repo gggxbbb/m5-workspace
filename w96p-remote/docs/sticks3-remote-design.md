@@ -32,7 +32,12 @@ stateDiagram-v2
 
     Menu --> Menu : BtnB 单击 → 下一项(循环)
     Menu --> Adjust : BtnA 单击/长按(选中可调项)
+    Menu --> Details : BtnA 单击(选中"状态详情")
     Menu --> Dashboard : 选中"返回" + BtnA / BtnB 长按
+
+    Details --> Details : BtnA 单击 → 翻页(实时/累计)
+    Details --> Menu : BtnB 单击
+    Details --> Dashboard : BtnB 长按
 
     Adjust --> Menu : BtnB 单击(保存并返回)
     Adjust --> Dashboard : BtnB 长按(放弃返回)
@@ -58,10 +63,11 @@ stateDiagram-v2
 | 自然风 | 菜单 → 自然风 → BtnA 短按切换 → BtnB 保存 | `setNatureWind(bool)` |
 | Turbo 倒计时查看 | 看板自动（turboRemainS>0 时看板变倒计时样式） | 快照字段 |
 | 灯光档位 | 菜单 → 灯光 → BtnA 短按循环 0-4 → BtnB 保存 | `setLight(lv)` |
-| 查看电池/电机/VBUS | 看板常驻显示 | 快照字段 |
+| 查看电池/电机/VBUS 摘要 | 看板常驻显示 | 快照字段 |
+| 查看全部状态详情 | 菜单 → 状态详情（两页：实时/累计，BtnA 翻页） | 快照 + `readPowerConfig` |
 | 重连 | 掉线自动重扫（client 已实现 onConn(false) → startScan） | 自动 |
 
-**菜单项定义**（循环顺序）：`风速 → 定时 → 自然风 → Turbo → 灯光 → 返回`
+**菜单项定义**（循环顺序）：`风速 → 定时 → 自然风 → Turbo → 灯光 → 状态详情 → 返回`
 
 ## 4. 手势模式设计（v2：双通道）
 
@@ -187,6 +193,7 @@ flowchart LR
 │   自然风       off   │
 │   Turbo        off   │
 │   灯光          4    │
+│ > 状态详情           │
 │   返回               │
 │                      │
 │ A:调节  B:下一项     │
@@ -209,6 +216,52 @@ flowchart LR
 └──────────────────────┘
 ```
 
+### 5.6 状态详情 · 第 1 页（实时）
+
+```
+┌──────────────────────┐
+│ STATUS 实时     1/2  │
+│ SPD  65%   GEA --    │
+│ NAT  off   TUR --    │
+│ TMR  --    LGT 4     │
+│ ──────────────────   │
+│ BAT 3.95V  -412mA    │
+│      38°C            │
+│ REM 12000mWh         │
+│ CAP 17200mWh         │
+│ ──────────────────   │
+│ MOT 320mA  5.1V ok   │
+│ BUS 5.02V  1.2A      │
+│ POW in-C   DCHG      │
+│ C.out ON C.in ON     │
+│ HV   ON              │
+│                      │
+│ A:翻页  B:返回菜单   │
+└──────────────────────┘
+```
+
+### 5.7 状态详情 · 第 2 页（累计/设备）
+
+```
+┌──────────────────────┐
+│ STATUS 累计     2/2  │
+│ CHG  8230 mWh        │
+│ DCHG 14110 mWh       │
+│ chg.t 12h34m         │
+│ dchg.t 31h02m        │
+│ ──────────────────   │
+│ DEV W96P  BLE -58dB  │
+│ MAC aa:bb:cc:dd:ee   │
+│ FW  v1.7 (powVer 17) │
+│ core temp 41°C       │
+│ sink PD  src QC3.0   │
+│                      │
+│ A:翻页  B:返回菜单   │
+└──────────────────────┘
+```
+
+说明：进入详情页时做一次 `readPowerConfig`（阻塞读）补齐固件版本/核心温度/快充协议；`chgMwh/dchgMwh/chgTimeS/dchgTimeS` 来自 FFD1 快照；powSink/powSrc 数值按协议 §5.4 表格映射成文字。两页均随 500ms 快照刷新。
+
 ### 5.5 手势模式
 
 ```
@@ -229,16 +282,18 @@ flowchart LR
 
 ```cpp
 // ===== 状态与数据 =====
-enum Screen { CONNECTING, DASHBOARD, MENU, ADJUST, GESTURE, TURBO_DASH };
+enum Screen { CONNECTING, DASHBOARD, MENU, ADJUST, GESTURE, TURBO_DASH, DETAILS };
 Screen scr = CONNECTING;
+int detailsPage = 0;        // 0=实时 1=累计
+PowerConfig powCfg;         // 进详情页时读一次
 
 Snapshot snap;              // client 轮询快照（500ms）
 bool    online = false;
 
 // 菜单
 struct MenuItem { const char* name; enum { PERCENT, MINUTES, TOGGLE, LIGHT, BACK } type; };
-MenuItem menu[6] = { {"风速",PERCENT}, {"定时",MINUTES}, {"自然风",TOGGLE},
-                     {"Turbo",TOGGLE}, {"灯光",LIGHT}, {"返回",BACK} };
+MenuItem menu[7] = { {"风速",PERCENT}, {"定时",MINUTES}, {"自然风",TOGGLE},
+                     {"Turbo",TOGGLE}, {"灯光",LIGHT}, {"状态详情",VIEW}, {"返回",BACK} };
 int menuIdx = 0;
 int adjustVal;              // 调节态暂存值（保存才下发）
 
@@ -329,12 +384,21 @@ void dispatchButtons() {
         break;
     }
     case MENU:
-        if (M5.BtnB.wasClicked()) menuIdx = (menuIdx + 1) % 6;
+        if (M5.BtnB.wasClicked()) menuIdx = (menuIdx + 1) % 7;
         if (M5.BtnB.pressedFor(800)) scr = DASHBOARD;
         if (M5.BtnA.wasClicked() || M5.BtnA.wasHold()) {
             if (menu[menuIdx].type == BACK) scr = DASHBOARD;
+            else if (menu[menuIdx].type == VIEW) {
+                cli.readPowerConfig(powCfg);   // 阻塞读一次，补齐 FW/快充信息
+                detailsPage = 0; scr = DETAILS;
+            }
             else { adjustVal = currentValOf(menuIdx); scr = ADJUST; }
         }
+        break;
+    case DETAILS:
+        if (M5.BtnA.wasClicked()) detailsPage ^= 1;              // 翻页
+        if (M5.BtnB.wasClicked()) scr = MENU;
+        if (M5.BtnB.pressedFor(800)) scr = DASHBOARD;
         break;
     case ADJUST:
         if (M5.BtnA.wasClicked()) adjustVal = stepDown(menu[menuIdx].type, adjustVal);
