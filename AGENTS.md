@@ -60,3 +60,41 @@ Locally installed libraries (API KBs match these exact versions): M5Unified 0.2.
 - `.gitattributes`: `* text=auto`, `*.ino` forced LF (Windows editors must not inject CRLF)
 - Working OS is Windows; shell is POSIX-flavored (bash) — cmd built-ins like `if exist` fail
 - Keep KB files in Chinese, code comments may be English/Chinese; update `kb/README.md` index when adding KB files
+
+## Project Layout (fixed convention)
+
+A **project** is a root subdirectory containing per-target sketch branches and a project-local library:
+
+```
+<project>/
+├── lib/<name>/            ← project-local Arduino library (library.properties + src/)
+├── <branch>/<branch>.ino  ← one sketch per target/form factor; folder name == .ino name
+│   (e.g. w96p-remote/{demo, sticks3, cardputer}/)
+├── tools/<tool>/<tool>.ino ← debug/calibration utilities (e.g. tools/imu-calib)
+└── docs/                  ← design docs
+```
+
+- **`lib/` (repo root) = workspace-shared libraries** spanning multiple projects; project-only libraries live in `<project>/lib/`, never in root `lib/`
+- Compile with `--libraries` (repeatable, project lib first):
+
+```bash
+arduino-cli compile --libraries ./<project>/lib --libraries ./lib --fqbn <FQBN> <project>/<branch>
+```
+
+- Rule: sketch code includes shared headers as `<lib_header.h>` (angle brackets), never relative paths into another branch
+
+## Agent skills
+
+本工作区按**项目自治 + 根部兜底**组织 agent 配置：每个 `<project>/` 可以有自己的 `AGENTS.md`、`CONTEXT.md`、`docs/adr/`、`.scratch/` issue tracker；根部文件管跨项目约定。项目级文件存在时优先于根部。
+
+### Issue tracker
+
+逐项目本地 markdown：`<project>/.scratch/<feature>/`，一票一文件，`Status:` 行记状态。See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+默认五角色（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`），经 `Status:` 行落地。See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+项目级优先（`<project>/CONTEXT.md` + `<project>/docs/adr/`），根部 `CONTEXT.md` + `docs/adr/` 兜底，硬件事实以 `kb/` 为权威。See `docs/agents/domain.md`.
