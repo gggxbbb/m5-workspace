@@ -37,7 +37,13 @@ stateDiagram-v2
     Menu --> Menu : BtnB 单击 → 下一项(循环)
     Menu --> Adjust : BtnA 单击/长按(选中可调项)
     Menu --> Details : BtnA 单击(选中"状态详情")
+    Menu --> ConnMgmt : BtnA 单击(选中"连接管理")
     Menu --> Dashboard : 选中"返回" + BtnA / BtnB 长按
+
+    ConnMgmt --> ConnMgmt : BtnB 单击 → 下一项(扫描/设备列表/断开/返回)
+    ConnMgmt --> ConnMgmt : BtnA 单击 → 执行(扫描/连接#n/断开)
+    ConnMgmt --> Dashboard : 选中"返回" + BtnA / BtnB 长按
+    ConnMgmt --> Dashboard : 连接成功(自动返回看板)
 
     Details --> Details : BtnA 单击 → 翻页(实时/累计)
     Details --> Menu : BtnB 单击
@@ -51,6 +57,8 @@ stateDiagram-v2
     note right of Dashboard
         常态：500ms 轮询快照驱动刷新
         turboRemainS>0 自动切 TurboDash 样式
+        意外掉线 → 自动重扫重连
+        手动断开（ConnMgmt）→ 保持离线，不重扫
     end note
 ```
 
@@ -69,9 +77,10 @@ stateDiagram-v2
 | 灯光档位 | 菜单 → 灯光 → BtnA 短按循环 0-4 → BtnB 保存 | `setLight(lv)` |
 | 查看电池/电机/VBUS 摘要 | 看板常驻显示 | 快照字段 |
 | 查看全部状态详情 | 菜单 → 状态详情（两页：实时/累计，BtnA 翻页） | 快照 + `readPowerConfig` |
-| 重连 | 掉线自动重扫（client 已实现 onConn(false) → startScan） | 自动 |
+| 扫描/连接/断开/重连 | 菜单 → 连接管理（扫描列表 + 手动断开；见状态机） | `startScan/connectIndex/disconnect` |
+| 重连 | 掉线自动重扫（**仅限意外掉线**；用户手动断开不自动重连） | 自动 |
 
-**菜单项定义**（循环顺序）：`风速 → 定时 → 自然风 → Turbo → 灯光 → 状态详情 → 返回`
+**菜单项定义**（循环顺序）：`风速 → 定时 → 自然风 → Turbo → 灯光 → 状态详情 → 连接管理 → 返回`
 
 ## 4. 手势模式设计（v2：双通道）
 
@@ -244,7 +253,34 @@ flowchart LR
 └──────────────────────┘
 ```
 
-### 5.6 状态详情 · 第 1 页（实时）
+### 5.6 连接管理（菜单进入，迷你列表）
+
+```
+┌──────────────────────┐
+│ CONNECT     ● 在线   │  或 ○ 离线
+│ 当前: W96P-3F2A     │  已连设备名/离线显示 --
+│                      │
+│ > 重新扫描           │
+│   断开连接           │  在线时才有此项
+│   ────────────────   │
+│   W96P-3F2A   -58dB  │  扫描结果(已连的标*)
+│   W96P-7B11   -71dB  │
+│   ────────────────   │
+│   返回               │
+│                      │
+│ B:下一项  A:执行     │
+└──────────────────────┘
+```
+
+行为规则：
+
+- 选中设备项 + BtnA → `connectIndex`；连接成功自动返回看板，失败留在本页显示"连接失败"
+- "断开连接" + BtnA → `disconnect`，置 `manualOffline=true`，**抑制自动重扫**
+- 任意手动连接成功后 `manualOffline=false`
+- 意外掉线（onConn(false) 且 !manualOffline）→ 自动重扫（既有行为）
+- 扫描进行中显示"扫描中…"，结果随到随刷新
+
+### 5.7 状态详情 · 第 1 页（实时）
 
 ```
 ┌──────────────────────┐
@@ -262,7 +298,7 @@ flowchart LR
 └──────────────────────┘
 ```
 
-### 5.7 状态详情 · 第 2 页（累计/设备）
+### 5.8 状态详情 · 第 2 页（设备）
 
 ```
 ┌──────────────────────┐
@@ -303,18 +339,20 @@ flowchart LR
 
 ```cpp
 // ===== 状态与数据 =====
-enum Screen { CONNECTING, DASHBOARD, MENU, ADJUST, GESTURE, TURBO_DASH, DETAILS };
+enum Screen { CONNECTING, DASHBOARD, MENU, ADJUST, GESTURE, TURBO_DASH, DETAILS, CONN_MGMT };
 Screen scr = CONNECTING;
-int detailsPage = 0;        // 0=实时 1=累计
+int detailsPage = 0;        // 0=实时 1=设备
 PowerConfig powCfg;         // 进详情页时读一次
+bool manualOffline = false; // 手动断开=true，抑制自动重扫；手动连接成功复位
 
 Snapshot snap;              // client 轮询快照（500ms）
 bool    online = false;
 
 // 菜单
 struct MenuItem { const char* name; enum { PERCENT, MINUTES, TOGGLE, LIGHT, BACK } type; };
-MenuItem menu[7] = { {"风速",PERCENT}, {"定时",MINUTES}, {"自然风",TOGGLE},
-                     {"Turbo",TOGGLE}, {"灯光",LIGHT}, {"状态详情",VIEW}, {"返回",BACK} };
+MenuItem menu[8] = { {"风速",PERCENT}, {"定时",MINUTES}, {"自然风",TOGGLE},
+                     {"Turbo",TOGGLE}, {"灯光",LIGHT}, {"状态详情",VIEW},
+                     {"连接管理",VIEW}, {"返回",BACK} };
 int menuIdx = 0;
 int adjustVal;              // 调节态暂存值（保存才下发）
 
@@ -405,16 +443,29 @@ void dispatchButtons() {
         break;
     }
     case MENU:
-        if (M5.BtnB.wasClicked()) menuIdx = (menuIdx + 1) % 7;
+        if (M5.BtnB.wasClicked()) menuIdx = (menuIdx + 1) % 8;
         if (M5.BtnB.pressedFor(800)) scr = DASHBOARD;
         if (M5.BtnA.wasClicked() || M5.BtnA.wasHold()) {
             if (menu[menuIdx].type == BACK) scr = DASHBOARD;
-            else if (menu[menuIdx].type == VIEW) {
-                cli.readPowerConfig(powCfg);   // 阻塞读一次，补齐 FW/快充信息
+            else if (menuIdx == 5) {           // 状态详情
+                cli.readPowerConfig(powCfg);
                 detailsPage = 0; scr = DETAILS;
             }
+            else if (menuIdx == 6) { scr = CONN_MGMT; connSel = 0; }  // 连接管理
             else { adjustVal = currentValOf(menuIdx); scr = ADJUST; }
         }
+        break;
+    case CONN_MGMT:   // connItems: [重扫] [断开?] [设备*n] [返回]，动态构建
+        if (M5.BtnB.wasClicked()) connSel = (connSel + 1) % connItemCount();
+        if (M5.BtnB.pressedFor(800)) scr = DASHBOARD;
+        if (M5.BtnA.wasClicked()) {
+            auto it = connItem(connSel);
+            if (it == RESCAN)  cli.startScan();
+            if (it == DISCONN) { cli.disconnect(); manualOffline = true; }
+            if (it == BACK)    scr = DASHBOARD;
+            if (it.isDevice()) { cli.stopScan(); cli.connectIndex(it.devIdx); }
+        }
+        // onConn(true) 时：manualOffline=false; scr=DASHBOARD
         break;
     case DETAILS:
         if (M5.BtnA.wasClicked()) detailsPage ^= 1;              // 翻页
