@@ -3,5 +3,6 @@
         "*.ino": "cpp"
     },
     "C_Cpp.default.configurationProvider": "",
-    "C_Cpp.intelliSenseEngineFallback": "disabled"
+    "C_Cpp.intelliSenseEngineFallback": "disabled",
+    "C_Cpp.errorSquiggles": "disabled"
 }
