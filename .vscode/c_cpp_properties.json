@@ -14,6 +14,11 @@
                 "C:/Users/gameg/AppData/Local/Arduino15/packages/m5stack/hardware/esp32/3.3.8/variants/m5stack_sticks3",
                 "C:/Users/gameg/AppData/Local/Arduino15/packages/m5stack/hardware/esp32/3.3.8/libraries/**",
                 "C:/Users/gameg/AppData/Local/Arduino15/packages/m5stack/tools/esp32s3-libs/3.3.8-cn/include/**",
+                "C:/Users/gameg/Documents/Arduino/libraries/M5Unified/src",
+                "C:/Users/gameg/Documents/Arduino/libraries/M5GFX/src",
+                "C:/Users/gameg/Documents/Arduino/libraries/M5PM1/src",
+                "C:/Users/gameg/Documents/Arduino/libraries/M5Cardputer/src",
+                "C:/Users/gameg/Documents/Arduino/libraries/NimBLE-Arduino/src",
                 "C:/Users/gameg/Documents/Arduino/libraries/**"
             ],
             "defines": [
