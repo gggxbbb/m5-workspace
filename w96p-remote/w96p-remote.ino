@@ -1,6 +1,6 @@
 // w96p-remote.ino — W96P 风扇 BLE client 功能演示（无 UI，串口输出 115200）
 // 流程：扫描 → 连接第一个候选 → 读全部状态 → 把 client 的每个功能过一遍（改动型操作都做复原）
-#include "src/w96p_client.h"
+#include <w96p_client.h>
 #include <M5Unified.h>
 
 static w96p::Client cli;
