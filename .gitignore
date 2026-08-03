@@ -1,0 +1,17 @@
+# 刷机工具，非项目文件
+M5Burner-v3-beta-win-x64/
+
+# Arduino 构建产物
+build/
+.build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# PlatformIO
+.pio/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
