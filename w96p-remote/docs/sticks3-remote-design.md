@@ -485,4 +485,5 @@ void render() { /* 按 scr 分派五个界面；数值变化才重绘对应区�
 5. **Turbo 看板计时条总长**：需要 turboTime（FFF8），原型期可先用 199s 默认值，后续加一次连接后读取。
 6. **功耗**：遥控器场景后续可接 M5PM1 电源档（翻面朝下→L1 值守，拿起 IMU 唤醒），属二期，不影响本设计。
 7. **电量**：不做任何 SOC 推算（0.1V 负载压降使电压法失真），只显示裸电压/电流；SDK 自学习算法不移植。
+8. **中文渲染**：用 M5GFX 内置 `fonts::efontCN`（加粗 `efontCN_b`），`drawString` 自动 UTF-8 解码，混排无需处理；点阵字体只有固定尺寸档，大字号数字仍用 Latin 字体（Font4/6/DejaVu），逐次 `setFont` 切换；实施时把全部 UI 字符串烧入真机过一遍缺字检查，缺字再考虑 lgfx font converter 自制 `.vlw`。
 8. **client 层无需任何改动**——本设计全部基于已完成的 API（`setPower/setSpeed/setTimerMinutes/setNatureWind/setTurbo/setLight` + 快照字段）。
