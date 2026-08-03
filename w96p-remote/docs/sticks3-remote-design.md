@@ -257,9 +257,6 @@ flowchart LR
 │ ──────────────────   │
 │ MOT 320mA  5.1V ok   │
 │ BUS 5.02V  1.2A      │
-│ POW in-C   DCHG      │
-│ C.out ON C.in ON     │
-│ HV   ON              │
 │                      │
 │ A:翻页  B:返回菜单   │
 └──────────────────────┘
@@ -270,6 +267,10 @@ flowchart LR
 ```
 ┌──────────────────────┐
 │ STATUS 设备     2/2  │
+│ POW in-C   DCHG      │
+│ C.out ON C.in ON     │
+│ HV   ON              │
+│ ──────────────────   │
 │ DEV W96P  BLE -58dB  │
 │ MAC aa:bb:cc:dd:ee   │
 │ FW  v1.7 (powVer 17) │
