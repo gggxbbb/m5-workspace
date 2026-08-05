@@ -281,9 +281,9 @@ static void enterGesture() {
         }
     } else {
         // 体感基(静止时 accel 读"上"): right = cross(L, up) 指向用户右手
-        // fwd = cross(right, up) 使上举 p>0(升速)。实测标定见 DEVICE_LONG_AXIS 注释
+        // fwd = cross(up, right) —— 真机实测(2026-08-03) cross(right,up) 上举反向, 取反
         g.right = vnorm(vcross(DEVICE_LONG_AXIS, g.down));
-        g.fwd   = vnorm(vcross(g.right, g.down));
+        g.fwd   = vnorm(vcross(g.down, g.right));
         g.basisValid = true;
         lastDown = g.down; lastRight = g.right; lastFwd = g.fwd;
         hasLastBasis = true;
