@@ -134,11 +134,11 @@ static void mockFillSnapshot() {
 // ============================== BLE 写封装(mock/真机统一入口) ==============================
 static void fanSetPower(uint8_t gear) {
 #if W96P_MOCK
-    gearEst = gear;
+    if (gear > 0) gearEst = gear;        // 关机(0)不清档位记忆(2026-08-03 反馈)
     if (gear == 0) snap.speed = 0;
     else if (snap.speed == 0) snap.speed = w96p::kProfileW96P.gearDefaults[gear - 1];
 #else
-    if (cli.setPower(gear)) gearEst = gear;
+    if (cli.setPower(gear) && gear > 0) gearEst = gear;
 #endif
     dirty = true;
 }
@@ -367,7 +367,7 @@ static void gestureTick() {
         }
     }
     if (g.rollArmed && fabsf(rollDeg) > ROLL_TRIGGER_DEG) {
-        int gear = gearEst > 0 ? gearEst : 2;               // 快照无档位回读, 用本地估计
+        int gear = gearEst;    // 0=未知/从未换挡: 基准 0, 右翻 → GEAR 1(2026-08-03 反馈)
         int next = gear + (rollDeg > 0 ? -1 : 1);           // 左翻降/右翻升
         if (next >= 1 && next <= 4) {
             fanSetPower((uint8_t)next);
