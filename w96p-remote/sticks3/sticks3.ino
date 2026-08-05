@@ -26,7 +26,10 @@ static constexpr Vec3    DEVICE_LONG_AXIS   = { -1.0f, 0.0f, 0.0f };
 
 static constexpr float    G_TO_MS2          = 9.80665f;  // BMI270 accel 单位为 g, 转 m/s²
 static constexpr float    SHAKE_THRESH_MS2  = 2.5f;      // 摇: 体感 right 轴瞬态阈值(设计 §4.1)
-static constexpr uint32_t SHAKE_REFRACT_MS  = 400;       // 摇: 防连发
+static constexpr float    SHAKE_REARM_MS2   = 0.8f;      // 摇: 回稳重武装阈值(低于此持续计时)
+static constexpr uint32_t SHAKE_REARM_MS    = 150;       // 摇: 回稳确认时长(复位脉冲不再触发反向)
+static constexpr uint32_t SHAKE_PITCH_COOLDOWN_MS = 600; // 甩后 PWM 冷却(甩手附带俯仰不调速)
+static constexpr uint32_t GEAR_DISP_MS      = 800;       // 甩后手势屏显示 GEAR 顶替 PWM 时长
 static constexpr float    PITCH_DEADZONE_DEG= 8.0f;      // 举/摆: 死区(设计 §4.2)
 static constexpr float    PITCH_FULL_DEG    = 45.0f;     // 举/摆: 满倾角度
 static constexpr float    SPEED_RATE_PCT_S  = 30.0f;     // 举/摆: 满倾速率 %/s
@@ -246,7 +249,12 @@ static struct {
     Vec3 lp;                     // 低通后的当前重力
     float emaP;                  // 俯仰量度 EMA
     float speedF;                // 速率模式浮点风速
-    uint32_t shakeLockMs;
+    bool     shakeArmed;         // 摇检测武装(回稳重武装: 触发后须 |s|<阈值持续 150ms)
+    uint32_t settleStartMs;      // 回稳计时起点(0=未开始)
+    uint32_t pitchSuppressUntilMs; // 甩后 PWM 冷却截止
+    uint32_t gearDispUntilMs;    // 甩后 GEAR 顶替显示截止
+    int8_t   lastShakeGear;      // 最后一次甩到的档位(顶替显示用)
+    uint32_t speedSyncMs;        // 换挡后等待设备回读真实转速的起始时刻(0=无挂起)
     uint8_t lastSent; uint32_t lastSentMs;
     uint32_t lastTickMs;
 } g;
@@ -292,7 +300,12 @@ static void enterGesture() {
     g.lp = g.g0;
     g.emaP = 0;
     g.speedF = snap.valid ? snap.speed : 0;
-    g.shakeLockMs = 0;
+    g.shakeArmed = true;
+    g.settleStartMs = 0;
+    g.pitchSuppressUntilMs = 0;
+    g.gearDispUntilMs = 0;
+    g.lastShakeGear = 0;
+    g.speedSyncMs = 0;
     g.lastSent = snap.valid ? snap.speed : 0;
     g.lastSentMs = 0;
     g.lastTickMs = millis();
@@ -323,23 +336,45 @@ static void gestureTick() {
     g.lastTickMs = now;
     if (!g.basisValid) { dirty = true; return; }
 
+    // 换挡后挂起的转速再同步: 等风扇应用档位校准值, 用轮询回读覆盖本地(2026-08-03 反馈)
+    if (g.speedSyncMs != 0 && snap.valid && now - g.speedSyncMs >= 500) {
+        g.speedF = snap.speed;
+        g.lastSent = snap.speed;
+        g.speedSyncMs = 0;
+    }
+
     // --- 通道1: 摇(离散档位, 体感 right 轴瞬态脉冲) ---
     // right 轴基本无重力分量, 直接投影即近似高通(设计 §6 伪代码)
     float s  = vdot(a, g.right);
     float sf = vdot(a, g.fwd);
     float sd = vdot(a, g.down);
-    if (now > g.shakeLockMs && fabsf(s) > SHAKE_THRESH_MS2
+    // 回稳重武装: 触发后手的复位动作(反向减速脉冲)不再误判为反向甩(2026-08-03 真机反馈)
+    if (!g.shakeArmed) {
+        if (fabsf(s) < SHAKE_REARM_MS2) {
+            if (g.settleStartMs == 0) g.settleStartMs = now;
+            if (now - g.settleStartMs >= SHAKE_REARM_MS) g.shakeArmed = true;
+        } else {
+            g.settleStartMs = 0;
+        }
+    }
+    if (g.shakeArmed && fabsf(s) > SHAKE_THRESH_MS2
         && fabsf(s) > fabsf(sf) && fabsf(s) > fabsf(sd)) {   // right 分量占优
         int gear = gearEst > 0 ? gearEst : 2;               // 快照无档位回读, 用本地估计
         int next = gear + (s > 0 ? 1 : -1);
         if (next >= 1 && next <= 4) {
             fanSetPower((uint8_t)next);
             flashColor = (s > 0) ? C_CYAN : C_ORANGE;       // 右摇闪青/左摇闪橙
+            g.lastShakeGear = (int8_t)next;
         } else {
             flashColor = C_RED;                             // 到头闪红
+            g.lastShakeGear = (int8_t)gear;
         }
         flashUntilMs = now + GEAR_FLASH_MS;
-        g.shakeLockMs = now + SHAKE_REFRACT_MS;
+        g.shakeArmed = false;                               // 缴械, 等回稳重武装
+        g.settleStartMs = 0;
+        g.pitchSuppressUntilMs = now + SHAKE_PITCH_COOLDOWN_MS;  // 甩手附带俯仰不调速
+        g.gearDispUntilMs = now + GEAR_DISP_MS;                  // 手势屏顶替显示 GEAR
+        g.speedSyncMs = now;   // 换挡后设备转速变为档位校准值, 等轮询回读真实 PWM(2026-08-03 反馈)
         Serial.printf("[gesture] shake s=%.2f gear %d->%d\n", s, gear, next);
     }
 
@@ -347,6 +382,12 @@ static void gestureTick() {
     g.lp.x += EMA_ALPHA * (a.x - g.lp.x);
     g.lp.y += EMA_ALPHA * (a.y - g.lp.y);
     g.lp.z += EMA_ALPHA * (a.z - g.lp.z);
+    if (now < g.pitchSuppressUntilMs) { dirty = true; return; }   // 甩后冷却
+    if (g.pitchSuppressUntilMs != 0) {   // 冷却刚结束: 重定基线, 甩入的俯仰不残留
+        g.pBase = vdot(g.lp, g.fwd);
+        g.emaP = 0;
+        g.pitchSuppressUntilMs = 0;
+    }
     float p = vdot(g.lp, g.fwd) - g.pBase;                  // 俯仰量度(m/s² 投影)
     g.emaP += EMA_ALPHA * (p - g.emaP);
 
@@ -684,10 +725,17 @@ static void renderGesture() {
         txtC(140, "松开 BtnA 退出", C_GREY, &fonts::efontCN_12);
         return;
     }
-    uint8_t pct = (uint8_t)(g.speedF + 0.5f);
-    snprintf(buf, sizeof(buf), "%d %%", pct);
-    txtC(32, buf, C_CYAN, &fonts::Font4);
-    bar(6, 66, SCR_W - 12, 8, pct, C_CYAN);
+    // 甩后 GEAR 顶替 PWM 显示(2026-08-03 真机反馈)
+    if (millis() < g.gearDispUntilMs && g.lastShakeGear > 0) {
+        snprintf(buf, sizeof(buf), "GEAR %d", g.lastShakeGear);
+        txtC(32, buf, C_ORANGE, &fonts::Font4);
+        bar(6, 66, SCR_W - 12, 8, g.lastShakeGear * 25, C_ORANGE);
+    } else {
+        uint8_t pct = (uint8_t)(g.speedF + 0.5f);
+        snprintf(buf, sizeof(buf), "%d %%", pct);
+        txtC(32, buf, C_CYAN, &fonts::Font4);
+        bar(6, 66, SCR_W - 12, 8, pct, C_CYAN);
+    }
 
     // 调试信息(原型期保留, 设计 §5.5)
     float deg = 0;
