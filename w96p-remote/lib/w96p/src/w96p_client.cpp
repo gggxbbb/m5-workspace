@@ -55,12 +55,13 @@ struct Client::Impl {
 
     // 特征缓存（§8.10）
     struct CharSlot { const char* chrUuid; NimBLERemoteCharacteristic* chr; };
-    CharSlot slots[20] = {
+    CharSlot slots[21] = {
         {uuid::kPower, nullptr},         {uuid::kTimer, nullptr},
         {uuid::kFanSpeed, nullptr},      {uuid::kNatureWind, nullptr},
         {uuid::kShutdownDelay, nullptr}, {uuid::kGearDownMode, nullptr},
         {uuid::kSpeedCalib, nullptr},    {uuid::kTurboMode, nullptr},
         {uuid::kLight, nullptr},         {uuid::kTurboCountdown, nullptr},
+        {uuid::kTurboTime, nullptr},
         {uuid::kBleName, nullptr},
         {uuid::kBatteryInfo, nullptr},   {uuid::kPowerStatus, nullptr},
         {uuid::kMotorInfo, nullptr},
@@ -176,6 +177,7 @@ struct Client::Impl {
             {uuid::kShutdownDelay, uuid::kSvcMain}, {uuid::kGearDownMode, uuid::kSvcMain},
             {uuid::kSpeedCalib, uuid::kSvcMain},    {uuid::kTurboMode, uuid::kSvcMain},
             {uuid::kLight, uuid::kSvcMain},         {uuid::kTurboCountdown, uuid::kSvcMain},
+            {uuid::kTurboTime, uuid::kSvcMain},
             {uuid::kBleName, uuid::kSvcBleCfg},
             {uuid::kBatteryInfo, uuid::kSvcPower},  {uuid::kPowerStatus, uuid::kSvcPower},
             {uuid::kMotorInfo, uuid::kSvcPower},
@@ -646,6 +648,67 @@ bool Client::readSpeedCalib(uint8_t out4[4]) {
     if (!blockingRead(impl_->findChar(uuid::kSpeedCalib), kWriteRetries, d, n, keep) || n < 4)
         return false;
     memcpy(out4, d, 4);
+    return true;
+}
+
+bool Client::readTurboTime(uint16_t& sec) {
+    if (!connected()) return false;
+    const uint8_t* d = nullptr;
+    size_t n = 0;
+    NimBLEAttValue keep;
+    if (!blockingRead(impl_->findChar(uuid::kTurboTime), kWriteRetries, d, n, keep) || n < 1)
+        return false;
+    sec = n >= 2 ? u16be(d) : d[0];   // v1.3 单字节, v1.5+ 两字节
+    if (sec == 0) sec = 199;          // 0 = 默认 199s
+    return true;
+}
+
+bool Client::setTurboTime(uint16_t sec) {
+    if (!impl_) return false;
+    uint8_t buf[2];
+    const size_t n = buildU16be(sec, buf);
+    return impl_->enqueue(uuid::kSvcMain, uuid::kTurboTime, buf, uint8_t(n), false);
+}
+
+bool Client::readShutdownDelay(uint16_t& sec) {
+    if (!connected()) return false;
+    const uint8_t* d = nullptr;
+    size_t n = 0;
+    NimBLEAttValue keep;
+    if (!blockingRead(impl_->findChar(uuid::kShutdownDelay), kWriteRetries, d, n, keep) || n < 2)
+        return false;
+    sec = u16be(d);
+    return true;
+}
+
+bool Client::readGearDownMode(uint8_t& mode) {
+    if (!connected()) return false;
+    const uint8_t* d = nullptr;
+    size_t n = 0;
+    NimBLEAttValue keep;
+    if (!blockingRead(impl_->findChar(uuid::kGearDownMode), kWriteRetries, d, n, keep) || n < 1)
+        return false;
+    mode = d[0];
+    return true;
+}
+
+bool Client::readBleSn(bool& enabled) {
+    if (!connected()) return false;
+    const uint8_t* d = nullptr;
+    size_t n = 0;
+    NimBLEAttValue keep;
+    if (!blockingRead(impl_->findChar(uuid::kBleName), kWriteRetries, d, n, keep) || n < 1)
+        return false;
+    // FFC1 读回 ASCII 文本, 含 "BLE_SN=1" 即开启(web SDK readBleSn 同款判定)
+    enabled = false;
+    for (size_t i = 0; i + 7 <= n; i++) {
+        if (memcmp(d + i, "BLE_SN=", 7) == 0) {
+            enabled = (i + 7 < n) && d[i + 7] == '1';
+            return true;
+        }
+        if (memcmp(d + i, "BLE_SN1", 7) == 0) { enabled = true; return true; }
+    }
+    enabled = false;
     return true;
 }
 

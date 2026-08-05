@@ -39,7 +39,6 @@ static constexpr uint8_t  SPEED_WRITE_MIN_PCT = 2;       // setSpeed 最小变�
 static constexpr float    EMA_ALPHA         = 0.3f;      // 低通系数
 static constexpr uint32_t GESTURE_HOLD_MS   = 400;       // BtnA 按住进手势
 static constexpr uint32_t BTNB_LONG_MS      = 800;       // BtnB 长按 panic 回看板
-static constexpr uint16_t TURBO_TOTAL_S     = 199;       // 原型期默认(设计 §7.5, 后续读 FFF8)
 static constexpr uint32_t SCAN_SECONDS      = 8;
 static constexpr uint32_t CONNECT_GIVEUP_MS = 12000;     // CONNECTING 超时 → 离线看板
 static constexpr uint8_t  CONN_MAX_DEV_ROWS = 6;         // 连接管理页最多显示设备数(屏幕高度限制)
@@ -58,7 +57,8 @@ static constexpr int SCR_W = 135, SCR_H = 240;
 
 // ============================== 状态与数据 ==============================
 enum Screen : uint8_t { SCR_CONNECTING, SCR_DASHBOARD, SCR_MENU, SCR_ADJUST,
-                        SCR_GESTURE, SCR_TURBO_DASH, SCR_DETAILS, SCR_CONN_MGMT };
+                        SCR_GESTURE, SCR_TURBO_DASH, SCR_DETAILS, SCR_CONN_MGMT,
+                        SCR_SETTINGS, SCR_POW, SCR_CALIB };
 static Screen scr = SCR_CONNECTING;
 static bool   dirty = true;              // 脏标记: 仅脏时重绘(设计 §6)
 
@@ -86,18 +86,35 @@ static char connectedName[32] = "";
 static char connectedAddr[18] = "";
 static int  connectedRssi     = 0;
 
-// 菜单(设计 §3 循环顺序)
-enum MenuType : uint8_t { M_PERCENT, M_MINUTES, M_TOGGLE, M_LIGHT, M_VIEW, M_BACK };
+// 菜单(设计 §3 循环顺序 + 设置子菜单)
+enum MenuType : uint8_t { M_PERCENT, M_MINUTES, M_TOGGLE, M_LIGHT, M_VIEW, M_BACK, M_SUBMENU, M_SECONDS, M_POWPAGE, M_CALIBPAGE };
 enum ConnKind : uint8_t { CI_RESCAN, CI_DISCONN, CI_DEVICE, CI_BACK };
-struct MenuItem { const char* name; MenuType type; };
-static const MenuItem menu[8] = {
-    { "风速",   M_PERCENT }, { "定时",   M_MINUTES }, { "自然风", M_TOGGLE },
-    { "Turbo",  M_TOGGLE  }, { "灯光",   M_LIGHT   }, { "状态详情", M_VIEW },
-    { "连接管理", M_VIEW   }, { "返回",   M_BACK    },
+// 调节目标(替代菜单下标, 主菜单/子菜单统一)
+enum EditTarget : uint8_t { ET_NONE, ET_SPEED, ET_TIMER, ET_NATURE, ET_TURBO, ET_LIGHT,
+                            ET_TURBOTIME, ET_SHUTDOWN, ET_GEARDOWN, ET_BLESN };
+struct MenuItem { const char* name; MenuType type; EditTarget target; };
+static const MenuItem menu[9] = {
+    { "风速",   M_PERCENT, ET_SPEED  }, { "定时",   M_MINUTES, ET_TIMER  }, { "自然风", M_TOGGLE, ET_NATURE },
+    { "Turbo",  M_TOGGLE,  ET_TURBO  }, { "灯光",   M_LIGHT,   ET_LIGHT  }, { "设置",  M_SUBMENU, ET_NONE },
+    { "状态详情", M_VIEW,   ET_NONE   }, { "连接管理", M_VIEW,   ET_NONE   }, { "返回",   M_BACK,   ET_NONE },
+};
+static const MenuItem settingsMenu[7] = {
+    { "Turbo时间", M_SECONDS,   ET_TURBOTIME }, { "休眠延时", M_SECONDS,   ET_SHUTDOWN  },
+    { "减档模式", M_TOGGLE,    ET_GEARDOWN  }, { "BLE_SN",  M_TOGGLE,    ET_BLESN    },
+    { "电源开关", M_POWPAGE,   ET_NONE      }, { "档位校准", M_CALIBPAGE, ET_NONE      },
+    { "返回",     M_BACK,      ET_NONE      },
 };
 static int menuIdx   = 0;
+static int settingsIdx = 0;
+static EditTarget editTarget = ET_NONE;
+static MenuType   editType   = M_PERCENT;   // 当前 ADJUST 的步进类型
 static int adjustVal = 0;                // 调节态暂存(保存才下发)
-static int detailsPage = 0;              // 0=实时 1=设备
+// 设置项缓存(-1=未读; 进设置页时读取)
+static int setShutdownS = -1, setGearDown = -1, setBleSn = -1;
+static uint16_t turboTotalS = 199;       // 连接时读 FFF8 更新
+static uint8_t calBuf[4];                // 校准编辑缓冲
+static int calSel = 0, powSel = 0;
+static int detailsPage = 0;              // 0=实时 1=设备 2=S3
 static int connSel   = 0;
 
 // 快照没有的本地状态(GEA/LGT 无回读特征, 只跟踪本机下发值)
@@ -171,7 +188,7 @@ static void fanSetNature(bool on) {
 }
 static void fanSetTurbo(bool on) {
 #if W96P_MOCK
-    snap.turboRemainS = on ? TURBO_TOTAL_S : 0;
+    snap.turboRemainS = on ? turboTotalS : 0;
 #else
     cli.setTurbo(on);
 #endif
@@ -423,19 +440,25 @@ static void gestureTick() {
 // ============================== 按键分发(设计 §6) ==============================
 static bool fanIsOn() { return online && snap.valid && snap.speed > 0; }
 
-static int currentValOf(int idx) {
-    switch (menu[idx].type) {
-    case M_PERCENT: return snap.valid ? snap.speed : 0;
-    case M_MINUTES: return snap.timerRemainS / 60;
-    case M_TOGGLE:  return (idx == 2) ? (snap.natureOn ? 1 : 0) : (snap.turboRemainS > 0 ? 1 : 0);
-    case M_LIGHT:   return lightEst == 0xFF ? 0 : lightEst;
-    default:        return 0;
+static int currentValOf(EditTarget t) {
+    switch (t) {
+    case ET_SPEED:     return snap.valid ? snap.speed : 0;
+    case ET_TIMER:     return snap.timerRemainS / 60;
+    case ET_NATURE:    return snap.natureOn ? 1 : 0;
+    case ET_TURBO:     return snap.turboRemainS > 0 ? 1 : 0;
+    case ET_LIGHT:     return lightEst == 0xFF ? 0 : lightEst;
+    case ET_TURBOTIME: return turboTotalS;
+    case ET_SHUTDOWN:  return setShutdownS >= 0 ? setShutdownS : 0;
+    case ET_GEARDOWN:  return setGearDown >= 0 ? setGearDown : 0;
+    case ET_BLESN:     return setBleSn >= 0 ? setBleSn : 0;
+    default:           return 0;
     }
 }
 static int stepDown(MenuType t, int v) {
     switch (t) {
     case M_PERCENT: return v >= 5 ? v - 5 : 0;
     case M_MINUTES: return v >= 30 ? v - 30 : 0;
+    case M_SECONDS: return v >= 10 ? v - 10 : 0;
     case M_TOGGLE:  return !v;
     case M_LIGHT:   return (v + 1) % 5;    // 短按循环 0-4
     default:        return v;
@@ -445,17 +468,30 @@ static int stepUp(MenuType t, int v) {
     switch (t) {
     case M_PERCENT: return v <= 95 ? v + 5 : 100;
     case M_MINUTES: return v <= 450 ? v + 30 : 480;
+    case M_SECONDS: return v <= 590 ? v + 10 : 600;
     case M_TOGGLE:  return !v;
     case M_LIGHT:   return (v + 4) % 5;
     default:        return v;
     }
 }
 static void commitAdjust() {
-    switch (menu[menuIdx].type) {
-    case M_PERCENT: fanSetSpeed((uint8_t)adjustVal); break;
-    case M_MINUTES: fanSetTimerMin((uint16_t)adjustVal); break;
-    case M_TOGGLE:  (menuIdx == 2) ? fanSetNature(adjustVal) : fanSetTurbo(adjustVal); break;
-    case M_LIGHT:   fanSetLight((uint8_t)adjustVal); break;
+    switch (editTarget) {
+    case ET_SPEED:     fanSetSpeed((uint8_t)adjustVal); break;
+    case ET_TIMER:     fanSetTimerMin((uint16_t)adjustVal); break;
+    case ET_NATURE:    fanSetNature(adjustVal); break;
+    case ET_TURBO:     fanSetTurbo(adjustVal); break;
+    case ET_LIGHT:     fanSetLight((uint8_t)adjustVal); break;
+#if !W96P_MOCK
+    case ET_TURBOTIME: if (cli.setTurboTime((uint16_t)adjustVal)) turboTotalS = adjustVal == 0 ? 199 : adjustVal; break;
+    case ET_SHUTDOWN:  if (cli.setShutdownDelay((uint16_t)adjustVal)) setShutdownS = adjustVal; break;
+    case ET_GEARDOWN:  if (cli.setGearDownMode((uint8_t)adjustVal)) setGearDown = adjustVal; break;
+    case ET_BLESN:     if (cli.setBleSn(adjustVal != 0)) setBleSn = adjustVal; break;
+#else
+    case ET_TURBOTIME: turboTotalS = adjustVal == 0 ? 199 : adjustVal; break;
+    case ET_SHUTDOWN:  setShutdownS = adjustVal; break;
+    case ET_GEARDOWN:  setGearDown = adjustVal; break;
+    case ET_BLESN:     setBleSn = adjustVal; break;
+#endif
     default: break;
     }
 }
@@ -482,6 +518,23 @@ static void enterDetails() {
     dirty = true;
 }
 
+static void enterSettings() {
+    settingsIdx = 0;
+#if !W96P_MOCK
+    // 进设置页读当前值(每次进入重读, 保持新鲜; 失败留旧值/--)
+    uint16_t u16; uint8_t u8; bool b;
+    if (online && cli.readShutdownDelay(u16))  setShutdownS = u16;
+    if (online && cli.readGearDownMode(u8))    setGearDown = u8;
+    if (online && cli.readBleSn(b))            setBleSn = b ? 1 : 0;
+#else
+    if (setShutdownS < 0) setShutdownS = 0;
+    if (setGearDown < 0) setGearDown = 0;
+    if (setBleSn < 0) setBleSn = 1;
+#endif
+    scr = SCR_SETTINGS;
+    dirty = true;
+}
+
 static void dispatchButtons() {
     switch (scr) {
     case SCR_DASHBOARD:
@@ -502,16 +555,75 @@ static void dispatchButtons() {
         if (M5.BtnA.wasClicked() || M5.BtnA.wasHold()) {
             const MenuItem& it = menu[menuIdx];
             if (it.type == M_BACK) scr = SCR_DASHBOARD;
-            else if (it.type == M_VIEW && menuIdx == 5) { enterDetails(); break; }
-            else if (it.type == M_VIEW && menuIdx == 6) { scr = SCR_CONN_MGMT; connSel = 0; connMsg[0] = 0; }
-            else { adjustVal = currentValOf(menuIdx); scr = SCR_ADJUST; }
+            else if (it.type == M_SUBMENU) { enterSettings(); break; }
+            else if (it.type == M_VIEW && menuIdx == 6) { enterDetails(); break; }
+            else if (it.type == M_VIEW && menuIdx == 7) { scr = SCR_CONN_MGMT; connSel = 0; connMsg[0] = 0; }
+            else {
+                editTarget = it.target;
+                editType   = it.type;
+                adjustVal  = currentValOf(it.target);
+                scr = SCR_ADJUST;
+            }
             dirty = true;
         }
         break;
+    case SCR_SETTINGS:
+        if (M5.BtnB.wasClicked()) { settingsIdx = (settingsIdx + 1) % 7; dirty = true; }
+        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }
+        if (M5.BtnA.wasClicked() || M5.BtnA.wasHold()) {
+            const MenuItem& it = settingsMenu[settingsIdx];
+            if (it.type == M_BACK) scr = SCR_MENU;
+            else if (it.type == M_POWPAGE)   { powSel = 0; scr = SCR_POW; }
+            else if (it.type == M_CALIBPAGE) { memcpy(calBuf, gearSpeeds, 4); calSel = 0; scr = SCR_CALIB; }
+            else {
+                editTarget = it.target;
+                editType   = it.type;
+                adjustVal  = currentValOf(it.target);
+                scr = SCR_ADJUST;
+            }
+            dirty = true;
+        }
+        break;
+    case SCR_POW:
+        if (M5.BtnB.wasClicked()) { powSel = (powSel + 1) % 3; dirty = true; }
+        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_SETTINGS; dirty = true; }
+        if (M5.BtnA.wasClicked() && snap.valid) {
+            // 三开关: 当前态取自快照, 写反逻辑由 client 转换
+            static const char* keys[3] = { "POW_C_OUT", "POW_C_IN", "POW_C_HI" };
+            bool cur = powSel == 0 ? snap.power.cOutEnabled : powSel == 1 ? snap.power.cInEnabled : snap.power.cHiEnabled;
+#if !W96P_MOCK
+            cli.setPowSwitch(keys[powSel], !cur);
+#else
+            if (powSel == 0) snap.power.cOutEnabled = !cur;
+            else if (powSel == 1) snap.power.cInEnabled = !cur;
+            else snap.power.cHiEnabled = !cur;
+#endif
+            dirty = true;
+        }
+        break;
+    case SCR_CALIB:
+        if (M5.BtnB.wasClicked()) { calSel = (calSel + 1) % 6; dirty = true; }   // 4 档 + 保存 + 放弃
+        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_SETTINGS; dirty = true; }  // 放弃
+        if (M5.BtnA.wasClicked()) {
+            if (calSel < 4) { calBuf[calSel] = calBuf[calSel] >= 5 ? calBuf[calSel] - 5 : 0; }
+            else if (calSel == 4) {   // 保存
+#if !W96P_MOCK
+                if (cli.setSpeedCalib(calBuf)) memcpy(gearSpeeds, calBuf, 4);
+#else
+                memcpy(gearSpeeds, calBuf, 4);
+#endif
+                scr = SCR_SETTINGS;
+            } else {                  // 放弃
+                scr = SCR_SETTINGS;
+            }
+            dirty = true;
+        }
+        if (M5.BtnA.wasHold() && calSel < 4) { calBuf[calSel] = calBuf[calSel] <= 95 ? calBuf[calSel] + 5 : 100; dirty = true; }
+        break;
     case SCR_ADJUST:
-        if (M5.BtnA.wasClicked()) { adjustVal = stepDown(menu[menuIdx].type, adjustVal); dirty = true; }
-        if (M5.BtnA.wasHold())    { adjustVal = stepUp  (menu[menuIdx].type, adjustVal); dirty = true; }
-        if (M5.BtnB.wasClicked()) { commitAdjust(); scr = SCR_MENU; dirty = true; }      // 保存返回
+        if (M5.BtnA.wasClicked()) { adjustVal = stepDown(editType, adjustVal); dirty = true; }
+        if (M5.BtnA.wasHold())    { adjustVal = stepUp  (editType, adjustVal); dirty = true; }
+        if (M5.BtnB.wasClicked()) { commitAdjust(); scr = editTarget >= ET_TURBOTIME ? SCR_SETTINGS : SCR_MENU; dirty = true; }  // 保存返回
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }     // 放弃
         break;
     case SCR_DETAILS:
@@ -671,7 +783,7 @@ static void renderTurboDash() {
     unsigned t = snap.turboRemainS;
     snprintf(buf, sizeof(buf), "%02u:%02u", t / 60, t % 60);
     txtC(34, buf, C_ORANGE, &fonts::Font6);
-    bar(6, 78, SCR_W - 12, 10, TURBO_TOTAL_S ? (int)(t * 100 / TURBO_TOTAL_S) : 0, C_ORANGE);
+    bar(6, 78, SCR_W - 12, 10, turboTotalS ? (int)(t * 100 / turboTotalS) : 0, C_ORANGE);
 
     drawBatRow(106);
     drawMotRow(124, true);
@@ -681,13 +793,13 @@ static void renderTurboDash() {
 
 static void renderMenu() {
     txt(4, 2, "MENU", C_WHITE);
-    snprintf(buf, sizeof(buf), "%d/8", menuIdx + 1);
+    snprintf(buf, sizeof(buf), "%d/9", menuIdx + 1);
     txtR(SCR_W - 4, 4, buf, C_GREY, &fonts::efontCN_12);
 
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 9; i++) {
         int y = 30 + i * 20;
         bool cur = (i == menuIdx);
-        bool adjustable = menu[i].type != M_VIEW && menu[i].type != M_BACK;
+        bool adjustable = menu[i].type != M_VIEW && menu[i].type != M_BACK && menu[i].type != M_SUBMENU;
         if (cur) canvas.fillRect(0, y - 2, SCR_W, 20, C_WHITE);   // 光标行反白
         uint16_t fg = cur ? C_BLACK : (adjustable ? C_WHITE : C_GREY);
         canvas.setFont(&fonts::efontCN_16);
@@ -696,13 +808,14 @@ static void renderMenu() {
         canvas.drawString(buf, 4, y);
         // 当前值(青色)
         const char* v = nullptr;
-        switch (menu[i].type) {
-        case M_PERCENT: snprintf(buf, sizeof(buf), "%d%%", snap.valid ? snap.speed : 0); v = buf; break;
-        case M_MINUTES: snprintf(buf, sizeof(buf), "%s", snap.timerRemainS ? "" : "off");
+        switch (menu[i].target) {
+        case ET_SPEED: snprintf(buf, sizeof(buf), "%d%%", snap.valid ? snap.speed : 0); v = buf; break;
+        case ET_TIMER: snprintf(buf, sizeof(buf), "%s", snap.timerRemainS ? "" : "off");
                         if (snap.timerRemainS) snprintf(buf, sizeof(buf), "%umin", (snap.timerRemainS + 59) / 60);
                         v = buf; break;
-        case M_TOGGLE:  v = (i == 2 ? snap.natureOn : snap.turboRemainS > 0) ? "on" : "off"; break;
-        case M_LIGHT:   snprintf(buf, sizeof(buf), "%s", lightEst == 0xFF ? "--" : "");
+        case ET_NATURE: v = snap.natureOn ? "on" : "off"; break;
+        case ET_TURBO:  v = snap.turboRemainS > 0 ? "on" : "off"; break;
+        case ET_LIGHT:  snprintf(buf, sizeof(buf), "%s", lightEst == 0xFF ? "--" : "");
                         if (lightEst != 0xFF) snprintf(buf, sizeof(buf), "%d", lightEst);
                         v = buf; break;
         default: break;
@@ -716,23 +829,117 @@ static void renderMenu() {
     txt(4, 222, "B长按:回看板",     C_GREY, &fonts::efontCN_12);
 }
 
-static void renderAdjust() {
-    const MenuItem& it = menu[menuIdx];
-    txtC(10, it.name, C_WHITE);
+static void renderSettings() {
+    txt(4, 2, "SETTINGS", C_WHITE);
+    snprintf(buf, sizeof(buf), "%d/7", settingsIdx + 1);
+    txtR(SCR_W - 4, 4, buf, C_GREY, &fonts::efontCN_12);
 
-    switch (it.type) {
+    for (int i = 0; i < 7; i++) {
+        int y = 30 + i * 20;
+        bool cur = (i == settingsIdx);
+        bool adjustable = settingsMenu[i].type != M_BACK;
+        if (cur) canvas.fillRect(0, y - 2, SCR_W, 20, C_WHITE);
+        uint16_t fg = cur ? C_BLACK : (adjustable ? C_WHITE : C_GREY);
+        canvas.setFont(&fonts::efontCN_16);
+        canvas.setTextColor(fg, cur ? C_WHITE : C_BLACK);
+        snprintf(buf, sizeof(buf), "%s %s", cur ? ">" : " ", settingsMenu[i].name);
+        canvas.drawString(buf, 4, y);
+        const char* v = nullptr;
+        switch (settingsMenu[i].target) {
+        case ET_TURBOTIME: snprintf(buf, sizeof(buf), "%us", turboTotalS); v = buf; break;
+        case ET_SHUTDOWN:  snprintf(buf, sizeof(buf), "%s", setShutdownS < 0 ? "--" : setShutdownS == 0 ? "never" : "");
+                           if (setShutdownS > 0) snprintf(buf, sizeof(buf), "%ds", setShutdownS);
+                           v = buf; break;
+        case ET_GEARDOWN:  v = setGearDown < 0 ? "--" : setGearDown ? "直停" : "逐级"; break;
+        case ET_BLESN:     v = setBleSn < 0 ? "--" : setBleSn ? "on" : "off"; break;
+        default: break;
+        }
+        if (v) {
+            canvas.setTextColor(cur ? C_BLACK : C_CYAN, cur ? C_WHITE : C_BLACK);
+            canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
+        }
+    }
+    txt(4, 204, "A:进入/调节  B:下一项", C_GREY, &fonts::efontCN_12);
+    txt(4, 222, "B长按:回主菜单",       C_GREY, &fonts::efontCN_12);
+}
+
+static void renderPow() {
+    txt(4, 2, "电源开关", C_WHITE, &fonts::efontCN_16);
+    const char* names[3] = { "C口输出", "C口输入", "高压模式" };
+    bool vals[3] = { snap.power.cOutEnabled, snap.power.cInEnabled, snap.power.cHiEnabled };
+    for (int i = 0; i < 3; i++) {
+        int y = 40 + i * 28;
+        bool cur = (i == powSel);
+        if (cur) canvas.fillRect(0, y - 2, SCR_W, 22, C_WHITE);
+        canvas.setFont(&fonts::efontCN_16);
+        canvas.setTextColor(cur ? C_BLACK : C_WHITE, cur ? C_WHITE : C_BLACK);
+        snprintf(buf, sizeof(buf), "%s %s", cur ? ">" : " ", names[i]);
+        canvas.drawString(buf, 4, y);
+        const char* v = snap.valid ? (vals[i] ? "on" : "off") : "--";
+        canvas.setTextColor(cur ? C_BLACK : (snap.valid && vals[i]) ? C_GREEN : C_GREY, cur ? C_WHITE : C_BLACK);
+        canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
+    }
+    txt(4, 150, "A:切换  B:下一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 168, "B长按:返回", C_GREY, &fonts::efontCN_12);
+}
+
+static void renderCalib() {
+    txt(4, 2, "档位校准 %", C_WHITE, &fonts::efontCN_16);
+    const char* rows[6] = { "1档", "2档", "3档", "4档", "保存", "放弃" };
+    for (int i = 0; i < 6; i++) {
+        int y = 34 + i * 24;
+        bool cur = (i == calSel);
+        if (cur) canvas.fillRect(0, y - 2, SCR_W, 22, C_WHITE);
+        canvas.setFont(&fonts::efontCN_16);
+        canvas.setTextColor(cur ? C_BLACK : C_WHITE, cur ? C_WHITE : C_BLACK);
+        snprintf(buf, sizeof(buf), "%s %s", cur ? ">" : " ", rows[i]);
+        canvas.drawString(buf, 4, y);
+        if (i < 4) {
+            snprintf(buf, sizeof(buf), "%d", calBuf[i]);
+            canvas.setTextColor(cur ? C_BLACK : C_CYAN, cur ? C_WHITE : C_BLACK);
+            canvas.drawString(buf, SCR_W - 4 - canvas.textWidth(buf), y);
+        }
+    }
+    txt(4, 190, "A短:-5  A长:+5  B:下一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 208, "B长按:放弃", C_GREY, &fonts::efontCN_12);
+}
+
+static const char* editTargetName(EditTarget t) {
+    switch (t) {
+    case ET_SPEED: return "风速"; case ET_TIMER: return "定时"; case ET_NATURE: return "自然风";
+    case ET_TURBO: return "Turbo"; case ET_LIGHT: return "灯光"; case ET_TURBOTIME: return "Turbo时间";
+    case ET_SHUTDOWN: return "休眠延时"; case ET_GEARDOWN: return "减档模式"; case ET_BLESN: return "BLE_SN";
+    default: return "";
+    }
+}
+
+static void renderAdjust() {
+    txtC(10, editTargetName(editTarget), C_WHITE);
+
+    switch (editType) {
     case M_PERCENT: snprintf(buf, sizeof(buf), "%d %%", adjustVal); break;
     case M_MINUTES: snprintf(buf, sizeof(buf), "%d min", adjustVal); break;
-    case M_TOGGLE:  snprintf(buf, sizeof(buf), "%s", adjustVal ? "on" : "off"); break;
+    case M_SECONDS:
+        if (editTarget == ET_SHUTDOWN && adjustVal == 0) snprintf(buf, sizeof(buf), "never");
+        else snprintf(buf, sizeof(buf), "%d s", adjustVal);
+        break;
+    case M_TOGGLE:
+        if (editTarget == ET_GEARDOWN) snprintf(buf, sizeof(buf), "%s", adjustVal ? "直停" : "逐级");
+        else snprintf(buf, sizeof(buf), "%s", adjustVal ? "on" : "off");
+        break;
     case M_LIGHT:   snprintf(buf, sizeof(buf), "%d", adjustVal); break;
     default: buf[0] = 0; break;
     }
     txtC(48, buf, C_CYAN, &fonts::Font4);
 
-    switch (it.type) {
+    switch (editType) {
     case M_PERCENT: txtC(120, "A短按:-5%  A长按:+5%", C_GREY, &fonts::efontCN_12); break;
     case M_MINUTES: txtC(120, "A短按:-30  A长按:+30", C_GREY, &fonts::efontCN_12);
                     txtC(138, "0 = 取消定时", C_GREY, &fonts::efontCN_12); break;
+    case M_SECONDS: txtC(120, "A短按:-10s  A长按:+10s", C_GREY, &fonts::efontCN_12);
+                    if (editTarget == ET_TURBOTIME) txtC(138, "0 = 恢复默认199s", C_GREY, &fonts::efontCN_12);
+                    if (editTarget == ET_SHUTDOWN)  txtC(138, "0 = 永不休眠", C_GREY, &fonts::efontCN_12);
+                    break;
     case M_TOGGLE:  txtC(120, "A:切换", C_GREY, &fonts::efontCN_12); break;
     case M_LIGHT:   txtC(120, "A短按:循环0-4", C_GREY, &fonts::efontCN_12); break;
     default: break;
@@ -951,6 +1158,9 @@ static void render() {
     case SCR_CONNECTING: renderConnecting(); break;
     case SCR_DASHBOARD:  renderDashboard();  break;
     case SCR_MENU:       renderMenu();       break;
+    case SCR_SETTINGS:   renderSettings();   break;
+    case SCR_POW:        renderPow();        break;
+    case SCR_CALIB:      renderCalib();      break;
     case SCR_ADJUST:     renderAdjust();     break;
     case SCR_GESTURE:    renderGesture();    break;
     case SCR_TURBO_DASH: renderTurboDash();  break;
@@ -976,6 +1186,8 @@ static void handleEvents() {
             // 连接即读档位校准转速(FFF7), 换挡后本地立即可知真实 PWM(2026-08-03 反馈)
             uint8_t cal[4];
             if (cli.readSpeedCalib(cal)) { memcpy(gearSpeeds, cal, 4); calibValid = true; }
+            // 连接即读 Turbo 时长(FFF8), TurboDash 进度条用真值
+            cli.readTurboTime(turboTotalS);
             // 连接即查固件版本与序列号(DFU, 2026-08-03 反馈)
             fwValid = cli.readFwVersion(fwMarker);
             snValid = cli.readSn(snValue);

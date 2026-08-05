@@ -63,6 +63,11 @@ public:
     bool readSpeedCalib(uint8_t out4[4]);   // FFF7 各档位校准转速 %，连接后读一次
     bool readFwVersion(uint8_t& marker);    // DFU 版本查询, marker = major*10+minor
     bool readSn(uint32_t& sn);              // DFU 序列号查询(LE uint32)
+    bool readTurboTime(uint16_t& sec);      // FFF8 Turbo 时长(0→199 默认)
+    bool setTurboTime(uint16_t sec);        // FFF8 写 Turbo 时长 1-600(0=恢复默认)
+    bool readShutdownDelay(uint16_t& sec);  // FFF5 休眠延时(0=永不)
+    bool readGearDownMode(uint8_t& mode);   // FFF6 0逐级/1直停
+    bool readBleSn(bool& enabled);          // FFC1 文本解析 BLE_SN 状态
 
 private:
     struct Impl;                            // PIMPL：NimBLE 类型不外泄到头文件
