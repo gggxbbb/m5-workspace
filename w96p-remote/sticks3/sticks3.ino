@@ -338,11 +338,15 @@ static void gestureTick() {
     g.lastTickMs = now;
     if (!g.basisValid) { dirty = true; return; }
 
-    // 换挡后挂起的转速再同步: 等风扇应用档位校准值, 用轮询回读覆盖本地(2026-08-03 反馈)
-    if (g.speedSyncMs != 0 && snap.valid && now - g.speedSyncMs >= 500) {
-        g.speedF = snap.speed;
-        g.lastSent = snap.speed;
-        g.speedSyncMs = 0;
+    // 换挡后挂起的转速再同步: 轮询值必须等于档位校准值才落袋(防读到换挡前的陈旧
+    // FFF3 覆盖正确值), 超 2s 等不到则接受现值兜底(2026-08-03 真机反馈)
+    if (g.speedSyncMs != 0 && snap.valid && g.lastShakeGear >= 1 && g.lastShakeGear <= 4) {
+        uint8_t expect = gearSpeeds[g.lastShakeGear - 1];
+        if (snap.speed == expect || now - g.speedSyncMs >= 2000) {
+            g.speedF = snap.speed;
+            g.lastSent = snap.speed;
+            g.speedSyncMs = 0;
+        }
     }
 
     // --- 重力低通(两个通道共用) ---
@@ -731,7 +735,7 @@ static void renderGesture() {
     }
     // 换挡后 GEAR 顶替 PWM 显示(2026-08-03 真机反馈)
     if (millis() < g.gearDispUntilMs && g.lastShakeGear > 0) {
-        snprintf(buf, sizeof(buf), "GEAR %d · %d%%", g.lastShakeGear, gearSpeeds[g.lastShakeGear - 1]);
+        snprintf(buf, sizeof(buf), "GEAR %d", g.lastShakeGear);
         txtC(32, buf, C_ORANGE, &fonts::Font4);
         bar(6, 66, SCR_W - 12, 8, gearSpeeds[g.lastShakeGear - 1], C_ORANGE);
     } else {
