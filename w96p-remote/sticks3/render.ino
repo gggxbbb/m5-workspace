@@ -111,9 +111,9 @@ static void renderDashboard() {
     drawMotRow(150, false);
     drawBusRow(168);
 
-    txt(4,  182, "A按住:手势 2x:开关", C_GREY, &fonts::efontCN_12);
-    txt(4,  200, "3x:Turbo  B:菜单",  C_GREY, &fonts::efontCN_12);
-    txt(4,  218, "B按住:Turbo松手即停",  C_GREY, &fonts::efontCN_12);
+    txt(4,  198, "A按住:手势 2x:开关", C_GREY, &fonts::efontCN_12);
+    txt(4,  213, "3x:Turbo  B:菜单",  C_GREY, &fonts::efontCN_12);
+    txt(4,  228, "B按住:Turbo松手即停",  C_GREY, &fonts::efontCN_12);
 }
 
 static void renderTurboDash() {
