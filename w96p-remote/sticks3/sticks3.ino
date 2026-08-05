@@ -19,8 +19,10 @@
 struct Vec3 { float x, y, z; };
 
 // TODO-calibrate: 设备长轴 L 在设备(IMU)坐标系中的方向(硬件固定)。
-// 真机第一次烧录后按串口打印的 g0/right/fwd 标定本常量(设计 §7.3)。
-static constexpr Vec3    DEVICE_LONG_AXIS   = { 0.0f, 1.0f, 0.0f };
+// 真机标定(2026-08-03 imu-calib): 驱动轴系 ≠ 官方图, 绕 Z 旋转 90°:
+//   驱动 +X = 图 -Y(朝 USB 端), 驱动 +Y = 图 +X(设备右侧), 驱动 +Z = 图 +Z
+// 长轴(朝设备顶端) = -X_driver。注意加速度计静止时读支撑力方向("上")。
+static constexpr Vec3    DEVICE_LONG_AXIS   = { -1.0f, 0.0f, 0.0f };
 
 static constexpr float    G_TO_MS2          = 9.80665f;  // BMI270 accel 单位为 g, 转 m/s²
 static constexpr float    SHAKE_THRESH_MS2  = 2.5f;      // 摇: 体感 right 轴瞬态阈值(设计 §4.1)
@@ -278,9 +280,9 @@ static void enterGesture() {
             g.basisValid = false;
         }
     } else {
-        // 体感基: right = cross(down, L) 指向用户右手(官方 IMU 图 X+ 为设备右侧)
-        //         fwd = cross(right, down) 使上举 p>0(升速)
-        g.right = vnorm(vcross(g.down, DEVICE_LONG_AXIS));
+        // 体感基(静止时 accel 读"上"): right = cross(L, up) 指向用户右手
+        // fwd = cross(right, up) 使上举 p>0(升速)。实测标定见 DEVICE_LONG_AXIS 注释
+        g.right = vnorm(vcross(DEVICE_LONG_AXIS, g.down));
         g.fwd   = vnorm(vcross(g.right, g.down));
         g.basisValid = true;
         lastDown = g.down; lastRight = g.right; lastFwd = g.fwd;
