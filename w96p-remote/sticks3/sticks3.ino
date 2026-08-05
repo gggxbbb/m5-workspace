@@ -5,6 +5,7 @@
 // 采信原则(设计 §1): 只呈现电压/电流, 不做 SOC 推算, 不显示任何温度。
 #include <M5Unified.h>
 #include <w96p_client.h>
+#include <esp_mac.h>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -514,7 +515,7 @@ static void dispatchButtons() {
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }     // 放弃
         break;
     case SCR_DETAILS:
-        if (M5.BtnA.wasClicked()) { detailsPage ^= 1; dirty = true; }
+        if (M5.BtnA.wasClicked()) { detailsPage = (detailsPage + 1) % 3; dirty = true; }
         if (M5.BtnB.wasClicked()) { scr = SCR_MENU; dirty = true; }
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }
         break;
@@ -796,7 +797,7 @@ static const char* srcName(uint8_t v) {
 static void renderDetails() {
     if (detailsPage == 0) {
         txt(4, 2, "STATUS 实时", C_CYAN, &fonts::efontCN_12);
-        txtR(SCR_W - 4, 2, "1/2", C_GREY, &fonts::efontCN_12);
+        txtR(SCR_W - 4, 2, "1/3", C_GREY, &fonts::efontCN_12);
         snprintf(buf, sizeof(buf), "SPD %s   GEA %s", snap.valid ? "" : "--", gearEst ? "" : "--");
         if (snap.valid && gearEst) snprintf(buf, sizeof(buf), "SPD %d%%  GEA %d", snap.speed, gearEst);
         else if (snap.valid)       snprintf(buf, sizeof(buf), "SPD %d%%  GEA --", snap.speed);
@@ -824,9 +825,51 @@ static void renderDetails() {
             snprintf(buf, sizeof(buf), "%.2fV %.1fA", snap.power.vbusMv / 1000.0f, snap.power.vbusMa / 1000.0f);
             txt(34, 126, buf, C_WHITE, &fonts::efontCN_12);
         } else txt(34, 126, "--", C_GREY, &fonts::efontCN_12);
+        // 功率(W96P = 电机电压 × 电机电流, ble-protocol.md §5.3)
+        txt(4, 144, "PWR", C_GREY, &fonts::efontCN_12);
+        if (snap.valid && snap.motor.voltageMv > 0) {
+            float w = snap.motor.voltageMv / 1000.0f * (snap.motor.currentMa / 1000.0f);
+            snprintf(buf, sizeof(buf), "%.2fW", w);
+            txt(34, 144, buf, C_WHITE, &fonts::efontCN_12);
+        } else txt(34, 144, "--", C_GREY, &fonts::efontCN_12);
+    } else if (detailsPage == 2) {
+        // ---- 第 3 页: StickS3 自身信息 ----
+        txt(4, 2, "STATUS S3", C_CYAN, &fonts::efontCN_12);
+        txtR(SCR_W - 4, 2, "3/3", C_GREY, &fonts::efontCN_12);
+
+        // 电池(M5PM1)
+        bool chg = M5.Power.isCharging();
+        snprintf(buf, sizeof(buf), "BAT %d%%  %.2fV %s",
+                 M5.Power.getBatteryLevel(), M5.Power.getBatteryVoltage() / 1000.0f, chg ? "+" : "");
+        txt(4, 26, buf, chg ? C_GREEN : C_WHITE, &fonts::efontCN_12);
+
+        // 内存/PSRAM
+        snprintf(buf, sizeof(buf), "HEAP %uK free", unsigned(ESP.getFreeHeap() / 1024));
+        txt(4, 44, buf, C_WHITE, &fonts::efontCN_12);
+        snprintf(buf, sizeof(buf), "PSRAM %uK/%uK", unsigned(ESP.getFreePsram() / 1024), unsigned(ESP.getPsramSize() / 1024));
+        txt(4, 62, buf, C_WHITE, &fonts::efontCN_12);
+
+        // 主频/运行时长
+        uint32_t upS = millis() / 1000;
+        snprintf(buf, sizeof(buf), "CPU %uMHz  UP %u:%02u", ESP.getCpuFreqMHz(), unsigned(upS / 60), unsigned(upS % 60));
+        txt(4, 80, buf, C_WHITE, &fonts::efontCN_12);
+
+        // MAC + 固件编译时间
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_BT);
+        snprintf(buf, sizeof(buf), "MAC %02X:%02X:%02X:%02X:%02X:%02X",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        txt(4, 98, buf, C_GREY, &fonts::efontCN_12);
+        snprintf(buf, sizeof(buf), "FW %s %s", __DATE__, __TIME__);
+        txt(4, 116, buf, C_GREY, &fonts::efontCN_12);
+
+        // 实时 IMU(手势调试用)
+        Vec3 a = readAccelMs2();
+        snprintf(buf, sizeof(buf), "ACC %+.2f %+.2f %+.2f", a.x, a.y, a.z);
+        txt(4, 134, buf, C_CYAN, &fonts::efontCN_12);
     } else {
         txt(4, 2, "STATUS 设备", C_CYAN, &fonts::efontCN_12);
-        txtR(SCR_W - 4, 2, "2/2", C_GREY, &fonts::efontCN_12);
+        txtR(SCR_W - 4, 2, "2/3", C_GREY, &fonts::efontCN_12);
         const char* pc = snap.power.powC == 1 ? "in-C" : snap.power.powC == 2 ? "out-C" : "--";
         const char* ps = snap.power.powSta == 1 ? "CHG" : snap.power.powSta == 2 ? "DCHG" : "--";
         snprintf(buf, sizeof(buf), "POW %s   %s", snap.valid ? pc : "--", snap.valid ? ps : "--");
@@ -1021,6 +1064,12 @@ void loop() {
     // turboRemainS>0 自动切 TurboDash 样式(设计 §2)
     if (snap.valid && snap.turboRemainS > 0 && scr == SCR_DASHBOARD) { scr = SCR_TURBO_DASH; dirty = true; }
     if (snap.turboRemainS == 0 && scr == SCR_TURBO_DASH) { scr = SCR_DASHBOARD; dirty = true; }
+
+    // S3 信息页(第 3 页)有实时数据: 500ms 节流重绘
+    if (scr == SCR_DETAILS && detailsPage == 2) {
+        static uint32_t lastS3Ms = 0;
+        if (millis() - lastS3Ms > 500) { lastS3Ms = millis(); dirty = true; }
+    }
 
     render();
     delay(5);

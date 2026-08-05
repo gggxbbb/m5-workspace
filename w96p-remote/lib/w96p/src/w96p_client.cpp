@@ -557,12 +557,20 @@ bool blockingRead(NimBLERemoteCharacteristic* chr, int attempts,
 
 bool Client::readPowerConfig(PowerConfig& out) {
     if (!connected()) return false;
+    NimBLERemoteCharacteristic* chr = impl_->findChar(uuid::kPowerConfig);
+    if (!chr) { Serial.println("[w96p] readPowerConfig: char not in cache (fan may not expose FFD4)"); return false; }
     const uint8_t* d = nullptr;
     size_t n = 0;
     NimBLEAttValue keep;
-    if (!blockingRead(impl_->findChar(uuid::kPowerConfig), kWriteRetries, d, n, keep))
+    if (!blockingRead(chr, kWriteRetries, d, n, keep)) {
+        Serial.println("[w96p] readPowerConfig: read failed/empty");
         return false;
-    return parsePowerConfig(d, n, out);
+    }
+    if (!parsePowerConfig(d, n, out)) {
+        Serial.printf("[w96p] readPowerConfig: short read n=%u (need 16)\n", (unsigned)n);
+        return false;
+    }
+    return true;
 }
 
 bool Client::readNatureCurve(uint8_t out128[128]) {
