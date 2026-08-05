@@ -21,6 +21,7 @@ inline constexpr uint8_t DATA_SN = 10;
 inline uint8_t updateCrc8(uint8_t crc, uint8_t byte) { return CRC8_TABLE[(crc ^ byte) & 0xFF]; }
 
 // 构造一帧（key=0 调试模式）。buf ≥ 5+payloadLen，返回帧长。
+// 加密范围: offset 2 起到帧尾(含 CRC)——与 SDK encryptBody 一致(2026-08-03 修正)
 inline size_t buildFrame(uint8_t* buf, uint8_t key, const uint8_t* payload, uint8_t payloadLen) {
     buf[0] = PACKAGE_HEAD;
     buf[1] = key;
@@ -31,7 +32,7 @@ inline size_t buildFrame(uint8_t* buf, uint8_t key, const uint8_t* payload, uint
     for (size_t i = 0; i < 4 + payloadLen; i++) crc = updateCrc8(crc, buf[i]);
     buf[4 + payloadLen] = crc;
     const uint8_t mask = CRC8_TABLE[key];
-    for (size_t i = 2; i < 4 + payloadLen; i++) buf[i] ^= mask;   // body 加密
+    for (size_t i = 2; i < 5 + payloadLen; i++) buf[i] ^= mask;   // body+CRC 加密
     return 5 + payloadLen;
 }
 
@@ -61,7 +62,7 @@ public:
             if (n_ < len_) return 0;
             state_ = CRC; return 0;
         case CRC: {
-            // 校验: HEAD+KEY+明文LEN+明文PAYLOAD
+            // 校验: HEAD+KEY+明文LEN+明文PAYLOAD; 收到的 CRC 字节也是加密的, 先解密
             uint8_t crc = CRC8_INIT;
             crc = updateCrc8(crc, PACKAGE_HEAD);
             crc = updateCrc8(crc, key_);
@@ -69,7 +70,7 @@ public:
             crc = updateCrc8(crc, uint8_t(len_ >> 8));
             for (uint16_t i = 0; i < len_; i++) crc = updateCrc8(crc, out[i]);
             state_ = HEAD;
-            if (crc != b) { reset(); return 0; }
+            if (crc != (uint8_t)(b ^ CRC8_TABLE[key_])) { reset(); return 0; }
             uint16_t got = len_;
             reset();
             return got;
