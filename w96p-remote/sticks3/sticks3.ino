@@ -33,7 +33,6 @@ static constexpr uint32_t SPEED_WRITE_MIN_MS= 150;       // setSpeed 写节流
 static constexpr uint8_t  SPEED_WRITE_MIN_PCT = 2;       // setSpeed 最小变化
 static constexpr float    EMA_ALPHA         = 0.3f;      // 低通系数
 static constexpr uint32_t GESTURE_HOLD_MS   = 400;       // BtnA 按住进手势
-static constexpr uint32_t BTNB_LONG_MS      = 800;       // BtnB 长按 panic 回看板
 static constexpr uint32_t SCAN_SECONDS      = 8;
 static constexpr uint32_t CONNECT_GIVEUP_MS = 12000;     // CONNECTING 超时 → 离线看板
 static constexpr uint8_t  CONN_MAX_DEV_ROWS = 6;         // 连接管理页最多显示设备数(屏幕高度限制)
@@ -257,13 +256,17 @@ static void dispatchButtons() {
             else if (n == 3) fanSetTurbo(snap.turboRemainS == 0);
         }
         if (M5.BtnA.pressedFor(GESTURE_HOLD_MS)) { enterGesture(); break; }
-        if (M5.BtnB.wasClicked()) { scr = (scr == SCR_TURBO_DASH) ? SCR_DASHBOARD : SCR_MENU; dirty = true; }
+        // BtnB 全局只走 btnBNav(decided): 与菜单共用判定窗, 防同一次点击被两屏重复消费(2026-08-05 bug)
+        if (btnBNav() == 1) {
+            if (scr == SCR_TURBO_DASH) scr = SCR_DASHBOARD;
+            else { scr = SCR_MENU; menuIdx = 0; }   // 看板进菜单回到第一项
+            dirty = true;
+        }
         break;
     }
     case SCR_MENU: {
         int8_t nav = btnBNav();
         if (nav) { menuIdx = (menuIdx + nav + 8) % 8; dirty = true; }
-        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; break; }
         if (M5.BtnA.wasClicked() || M5.BtnA.wasHold()) {
             const MenuItem& it = menu[menuIdx];
             if (it.type == M_BACK) scr = SCR_DASHBOARD;
@@ -283,7 +286,6 @@ static void dispatchButtons() {
     case SCR_SETTINGS: {
         int8_t nav = btnBNav();
         if (nav) { settingsIdx = (settingsIdx + nav + 7) % 7; dirty = true; }
-        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }
         if (M5.BtnA.wasClicked() || M5.BtnA.wasHold()) {
             const MenuItem& it = settingsMenu[settingsIdx];
             if (it.type == M_BACK) scr = SCR_MENU;
@@ -301,9 +303,10 @@ static void dispatchButtons() {
     }
     case SCR_POW: {
         int8_t nav = btnBNav();
-        if (nav) { powSel = (powSel + nav + 3) % 3; dirty = true; }
-        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_SETTINGS; dirty = true; }
-        if (M5.BtnA.wasClicked() && snap.valid) {
+        if (nav) { powSel = (powSel + nav + 4) % 4; dirty = true; }   // 3 开关 + 返回
+        if (M5.BtnA.wasClicked()) {
+            if (powSel == 3) { scr = SCR_SETTINGS; dirty = true; break; }   // 返回项
+            if (!snap.valid) break;
             // 三开关: 当前态取自快照, 写反逻辑由 client 转换
             static const char* keys[3] = { "POW_C_OUT", "POW_C_IN", "POW_C_HI" };
             bool cur = powSel == 0 ? snap.power.cOutEnabled : powSel == 1 ? snap.power.cInEnabled : snap.power.cHiEnabled;
@@ -315,7 +318,6 @@ static void dispatchButtons() {
     case SCR_CALIB: {
         int8_t nav = btnBNav();
         if (nav) { calSel = (calSel + nav + 6) % 6; dirty = true; }   // 4 档 + 保存 + 放弃
-        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_SETTINGS; dirty = true; }  // 放弃
         if (M5.BtnA.wasClicked()) {
             if (calSel < 4) { calBuf[calSel] = calBuf[calSel] >= 5 ? calBuf[calSel] - 5 : 0; }
             else if (calSel == 4) {   // 保存
@@ -329,21 +331,22 @@ static void dispatchButtons() {
         if (M5.BtnA.wasHold() && calSel < 4) { calBuf[calSel] = calBuf[calSel] <= 95 ? calBuf[calSel] + 5 : 100; dirty = true; }
         break;
     }
-    case SCR_ADJUST:
+    case SCR_ADJUST: {
         if (M5.BtnA.wasClicked()) { adjustVal = stepDown(editType, adjustVal); dirty = true; }
         if (M5.BtnA.wasHold())    { adjustVal = stepUp  (editType, adjustVal); dirty = true; }
-        if (M5.BtnB.wasClicked()) { commitAdjust(); scr = editTarget >= ET_TURBOTIME ? SCR_SETTINGS : SCR_MENU; dirty = true; }  // 保存返回
-        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }     // 放弃
+        Screen back = editTarget >= ET_TURBOTIME ? SCR_SETTINGS : SCR_MENU;
+        int8_t nav = btnBNav();
+        if (nav == 1)  { commitAdjust(); scr = back; dirty = true; }   // 1xB: 保存返回
+        if (nav == -1) { scr = back; dirty = true; }                   // 2xB: 放弃返回
         break;
+    }
     case SCR_DETAILS:
         if (M5.BtnA.wasClicked()) { detailsPage = (detailsPage + 1) % 3; dirty = true; }
-        if (M5.BtnB.wasClicked()) { scr = SCR_MENU; dirty = true; }
-        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }
+        if (btnBNav() == 1) { scr = SCR_MENU; dirty = true; }
         break;
     case SCR_CONN_MGMT: {
         int8_t nav = btnBNav();
         if (nav) { connSel = (connSel + nav + connItemCount()) % connItemCount(); dirty = true; }
-        if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; break; }
         if (M5.BtnA.wasClicked()) {
             int devIdx;
             switch (connItemAt(connSel, devIdx)) {

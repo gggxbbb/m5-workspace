@@ -169,7 +169,7 @@ static void renderMenu() {
     }
     // 8 项腾出底部空间, 提示两行分开不溢出(2026-08-05 真机照片反馈)
     txt(4, 196, "A:调节  B:下一项", C_GREY, &fonts::efontCN_12);
-    txt(4, 214, "2xB:上一项 B长按:回看板", C_GREY, &fonts::efontCN_12);
+    txt(4, 214, "2xB:上一项", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderSettings() {
@@ -203,27 +203,29 @@ static void renderSettings() {
         }
     }
     txt(4, 196, "A:进入/调节  B:下一项", C_GREY, &fonts::efontCN_12);
-    txt(4, 214, "2xB:上一项 B长按:回主菜单", C_GREY, &fonts::efontCN_12);
+    txt(4, 214, "2xB:上一项", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderPow() {
     txt(4, 2, "电源开关", C_WHITE, &fonts::efontCN_16);
-    const char* names[3] = { "C口输出", "C口输入", "高压模式" };
+    const char* names[4] = { "C口输出", "C口输入", "高压模式", "返回" };
     bool vals[3] = { snap.power.cOutEnabled, snap.power.cInEnabled, snap.power.cHiEnabled };
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         int y = 40 + i * 28;
         bool cur = (i == powSel);
         if (cur) canvas.fillRect(0, y - 2, SCR_W, 22, C_WHITE);
         canvas.setFont(&fonts::efontCN_16);
-        canvas.setTextColor(cur ? C_BLACK : C_WHITE, cur ? C_WHITE : C_BLACK);
+        canvas.setTextColor(cur ? C_BLACK : (i == 3 ? C_GREY : C_WHITE), cur ? C_WHITE : C_BLACK);
         snprintf(buf, sizeof(buf), "%s %s", cur ? ">" : " ", names[i]);
         canvas.drawString(buf, 4, y);
-        const char* v = snap.valid ? (vals[i] ? "on" : "off") : "--";
-        canvas.setTextColor(cur ? C_BLACK : (snap.valid && vals[i]) ? C_GREEN : C_GREY, cur ? C_WHITE : C_BLACK);
-        canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
+        if (i < 3) {
+            const char* v = snap.valid ? (vals[i] ? "on" : "off") : "--";
+            canvas.setTextColor(cur ? C_BLACK : (snap.valid && vals[i]) ? C_GREEN : C_GREY, cur ? C_WHITE : C_BLACK);
+            canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
+        }
     }
-    txt(4, 150, "A:切换  B:下一行", C_GREY, &fonts::efontCN_12);
-    txt(4, 168, "2xB:上一行 B长按:返回", C_GREY, &fonts::efontCN_12);
+    txt(4, 170, "A:切换/返回  B:下一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 188, "2xB:上一行", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderCalib() {
@@ -244,7 +246,7 @@ static void renderCalib() {
         }
     }
     txt(4, 190, "A短:-5  A长:+5  B:下一行", C_GREY, &fonts::efontCN_12);
-    txt(4, 208, "2xB:上一行 B长按:放弃", C_GREY, &fonts::efontCN_12);
+    txt(4, 208, "2xB:上一行", C_GREY, &fonts::efontCN_12);
 }
 
 static const char* editTargetName(EditTarget t) {
@@ -288,7 +290,7 @@ static void renderAdjust() {
     default: break;
     }
     txtC(170, "B:保存返回",      C_GREY, &fonts::efontCN_12);
-    txtC(188, "B长按:放弃",      C_GREY, &fonts::efontCN_12);
+    txtC(188, "2xB:放弃",      C_GREY, &fonts::efontCN_12);
 }
 
 static void renderGesture() {
@@ -494,7 +496,7 @@ static void renderConnMgmt() {
     if (connMsg[0]) txtC(202, connMsg, C_ORANGE, &fonts::efontCN_12);
     else if (millis() < scanUntilMs) txtC(202, "扫描中…", C_ORANGE, &fonts::efontCN_12);
     txt(4, 204, "B:下一项 2xB:上一项", C_GREY, &fonts::efontCN_12);
-    txt(4, 222, "A:执行  B长按:回看板", C_GREY, &fonts::efontCN_12);
+    txt(4, 222, "A:执行  B:遍历 2xB:反向", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderConnecting() {
