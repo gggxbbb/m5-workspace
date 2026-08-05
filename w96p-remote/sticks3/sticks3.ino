@@ -134,11 +134,11 @@ static void mockFillSnapshot() {
 // ============================== BLE 写封装(mock/真机统一入口) ==============================
 static void fanSetPower(uint8_t gear) {
 #if W96P_MOCK
-    if (gear > 0) gearEst = gear;        // 关机(0)不清档位记忆(2026-08-03 反馈)
+    gearEst = gear;                      // 风扇无档位记忆: 0(off)是显式状态(2026-08-03 裁定)
     if (gear == 0) snap.speed = 0;
     else if (snap.speed == 0) snap.speed = w96p::kProfileW96P.gearDefaults[gear - 1];
 #else
-    if (cli.setPower(gear) && gear > 0) gearEst = gear;
+    if (cli.setPower(gear)) gearEst = gear;
 #endif
     dirty = true;
 }
@@ -340,8 +340,8 @@ static void gestureTick() {
 
     // 换挡后挂起的转速再同步: 轮询值必须等于档位校准值才落袋(防读到换挡前的陈旧
     // FFF3 覆盖正确值), 超 2s 等不到则接受现值兜底(2026-08-03 真机反馈)
-    if (g.speedSyncMs != 0 && snap.valid && g.lastShakeGear >= 1 && g.lastShakeGear <= 4) {
-        uint8_t expect = gearSpeeds[g.lastShakeGear - 1];
+    if (g.speedSyncMs != 0 && snap.valid && g.lastShakeGear >= 0 && g.lastShakeGear <= 4) {
+        uint8_t expect = g.lastShakeGear == 0 ? 0 : gearSpeeds[g.lastShakeGear - 1];
         if (snap.speed == expect || now - g.speedSyncMs >= 2000) {
             g.speedF = snap.speed;
             g.lastSent = snap.speed;
@@ -367,15 +367,16 @@ static void gestureTick() {
         }
     }
     if (g.rollArmed && fabsf(rollDeg) > ROLL_TRIGGER_DEG) {
-        int gear = gearEst;    // 0=未知/从未换挡: 基准 0, 右翻 → GEAR 1(2026-08-03 反馈)
+        int gear = gearEst;    // 风扇无记忆: 0(off)是序列起点, 范围 0-4(2026-08-03 裁定)
         int next = gear + (rollDeg > 0 ? -1 : 1);           // 左翻降/右翻升
-        if (next >= 1 && next <= 4) {
+        if (next >= 0 && next <= 4) {
             fanSetPower((uint8_t)next);
             flashColor = (next > gear) ? C_CYAN : C_ORANGE; // 升档闪青/降档闪橙
             g.lastShakeGear = (int8_t)next;
-            // 档位校准值即真实转速: 立即覆盖本地(轮询 resync 仍作兜底)
-            g.speedF = gearSpeeds[next - 1];
-            g.lastSent = gearSpeeds[next - 1];
+            // 档位校准值即真实转速(0档=0): 立即覆盖本地(轮询 resync 仍作兜底)
+            uint8_t spd = next == 0 ? 0 : gearSpeeds[next - 1];
+            g.speedF = spd;
+            g.lastSent = spd;
         } else {
             flashColor = C_RED;                             // 到头闪红
             g.lastShakeGear = (int8_t)gear;
@@ -734,10 +735,10 @@ static void renderGesture() {
         return;
     }
     // 换挡后 GEAR 顶替 PWM 显示(2026-08-03 真机反馈)
-    if (millis() < g.gearDispUntilMs && g.lastShakeGear > 0) {
+    if (millis() < g.gearDispUntilMs && g.lastShakeGear >= 0) {
         snprintf(buf, sizeof(buf), "GEAR %d", g.lastShakeGear);
         txtC(32, buf, C_ORANGE, &fonts::Font4);
-        bar(6, 66, SCR_W - 12, 8, gearSpeeds[g.lastShakeGear - 1], C_ORANGE);
+        bar(6, 66, SCR_W - 12, 8, g.lastShakeGear == 0 ? 0 : gearSpeeds[g.lastShakeGear - 1], C_ORANGE);
     } else {
         uint8_t pct = (uint8_t)(g.speedF + 0.5f);
         snprintf(buf, sizeof(buf), "%d %%", pct);
