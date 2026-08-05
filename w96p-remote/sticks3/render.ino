@@ -422,21 +422,22 @@ static void renderDetails() {
         canvas.drawFastHLine(0, 80, SCR_W, C_GREY);
         snprintf(buf, sizeof(buf), "DEV %s", connectedName[0] ? connectedName : "--");
         txt(4, 86, buf, C_WHITE, &fonts::efontCN_12);
+        // RSSI 单列一行(DEV 名开 SN 广播后很长, 同行放不下)
         if (connectedName[0]) {
-            snprintf(buf, sizeof(buf), "%ddB", connectedRssi);
-            txtR(SCR_W - 4, 86, buf, C_GREY, &fonts::efontCN_12);
+            snprintf(buf, sizeof(buf), "RSSI %ddB", connectedRssi);
+            txt(4, 104, buf, C_GREY, &fonts::efontCN_12);
         }
         snprintf(buf, sizeof(buf), "MAC %s", connectedAddr[0] ? connectedAddr : "--");
-        txt(4, 104, buf, C_GREY, &fonts::efontCN_12);
+        txt(4, 122, buf, C_GREY, &fonts::efontCN_12);
         if (fwValid) {
             snprintf(buf, sizeof(buf), "FW  v%u.%u", fwMarker / 10, fwMarker % 10);
-            txt(4, 122, buf, C_WHITE, &fonts::efontCN_12);
+            txt(4, 140, buf, C_WHITE, &fonts::efontCN_12);
         } else {
-            txt(4, 122, "FW  --", C_GREY, &fonts::efontCN_12);
+            txt(4, 140, "FW  --", C_GREY, &fonts::efontCN_12);
         }
         if (snValid) {
             snprintf(buf, sizeof(buf), "SN  %u", unsigned(snValue));
-            txt(4, 140, buf, C_WHITE, &fonts::efontCN_12);
+            txt(4, 158, buf, C_WHITE, &fonts::efontCN_12);
         }
     }
     txtC(210, "A:翻页  B:返回菜单", C_GREY, &fonts::efontCN_12);
