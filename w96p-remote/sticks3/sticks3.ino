@@ -25,11 +25,11 @@ struct Vec3 { float x, y, z; };
 static constexpr Vec3    DEVICE_LONG_AXIS   = { -1.0f, 0.0f, 0.0f };
 
 static constexpr float    G_TO_MS2          = 9.80665f;  // BMI270 accel 单位为 g, 转 m/s²
-static constexpr float    SHAKE_THRESH_MS2  = 2.5f;      // 摇: 体感 right 轴瞬态阈值(设计 §4.1)
-static constexpr float    SHAKE_REARM_MS2   = 0.8f;      // 摇: 回稳重武装阈值(低于此持续计时)
-static constexpr uint32_t SHAKE_REARM_MS    = 150;       // 摇: 回稳确认时长(复位脉冲不再触发反向)
-static constexpr uint32_t SHAKE_PITCH_COOLDOWN_MS = 600; // 甩后 PWM 冷却(甩手附带俯仰不调速)
-static constexpr uint32_t GEAR_DISP_MS      = 800;       // 甩后手势屏显示 GEAR 顶替 PWM 时长
+static constexpr float    ROLL_TRIGGER_DEG  = 25.0f;     // 翻滚: 触发角(绕长轴, 设计 §4.1 v3)
+static constexpr float    ROLL_REARM_DEG    = 10.0f;     // 翻滚: 回中重武装角
+static constexpr uint32_t ROLL_REARM_MS     = 150;       // 翻滚: 回中确认时长
+static constexpr uint32_t SHAKE_PITCH_COOLDOWN_MS = 600; // 换挡后 PWM 冷却(翻滚附带俯仰不调速)
+static constexpr uint32_t GEAR_DISP_MS      = 800;       // 换挡后手势屏显示 GEAR 顶替 PWM 时长
 static constexpr float    PITCH_DEADZONE_DEG= 8.0f;      // 举/摆: 死区(设计 §4.2)
 static constexpr float    PITCH_FULL_DEG    = 45.0f;     // 举/摆: 满倾角度
 static constexpr float    SPEED_RATE_PCT_S  = 30.0f;     // 举/摆: 满倾速率 %/s
@@ -249,8 +249,8 @@ static struct {
     Vec3 lp;                     // 低通后的当前重力
     float emaP;                  // 俯仰量度 EMA
     float speedF;                // 速率模式浮点风速
-    bool     shakeArmed;         // 摇检测武装(回稳重武装: 触发后须 |s|<阈值持续 150ms)
-    uint32_t settleStartMs;      // 回稳计时起点(0=未开始)
+    bool     rollArmed;          // 翻滚武装(滞回: 触发后须回中到 ROLL_REARM_DEG 内持续 150ms)
+    uint32_t settleStartMs;      // 回中计时起点(0=未开始)
     uint32_t pitchSuppressUntilMs; // 甩后 PWM 冷却截止
     uint32_t gearDispUntilMs;    // 甩后 GEAR 顶替显示截止
     int8_t   lastShakeGear;      // 最后一次甩到的档位(顶替显示用)
@@ -300,7 +300,7 @@ static void enterGesture() {
     g.lp = g.g0;
     g.emaP = 0;
     g.speedF = snap.valid ? snap.speed : 0;
-    g.shakeArmed = true;
+    g.rollArmed = true;
     g.settleStartMs = 0;
     g.pitchSuppressUntilMs = 0;
     g.gearDispUntilMs = 0;
@@ -343,47 +343,46 @@ static void gestureTick() {
         g.speedSyncMs = 0;
     }
 
-    // --- 通道1: 摇(离散档位, 体感 right 轴瞬态脉冲) ---
-    // right 轴基本无重力分量, 直接投影即近似高通(设计 §6 伪代码)
-    float s  = vdot(a, g.right);
-    float sf = vdot(a, g.fwd);
-    float sd = vdot(a, g.down);
-    // 回稳重武装: 触发后手的复位动作(反向减速脉冲)不再误判为反向甩(2026-08-03 真机反馈)
-    if (!g.shakeArmed) {
-        if (fabsf(s) < SHAKE_REARM_MS2) {
+    // --- 重力低通(两个通道共用) ---
+    g.lp.x += EMA_ALPHA * (a.x - g.lp.x);
+    g.lp.y += EMA_ALPHA * (a.y - g.lp.y);
+    g.lp.z += EMA_ALPHA * (a.z - g.lp.z);
+
+    // --- 通道1: 翻滚换挡(绕长轴; 重力在 right 轴投影 → 翻滚角, 滞回状态机) ---
+    // 向左翻(左侧下沉): 测得"上"偏向右侧 → lp·right > 0 → 降档; 向右翻 → 升档
+    float rollSin = constrain(vdot(g.lp, g.right) / g.gLen, -1.0f, 1.0f);
+    float rollDeg = asinf(rollSin) * 57.2958f;
+    if (!g.rollArmed) {
+        if (fabsf(rollDeg) < ROLL_REARM_DEG) {
             if (g.settleStartMs == 0) g.settleStartMs = now;
-            if (now - g.settleStartMs >= SHAKE_REARM_MS) g.shakeArmed = true;
+            if (now - g.settleStartMs >= ROLL_REARM_MS) g.rollArmed = true;
         } else {
             g.settleStartMs = 0;
         }
     }
-    if (g.shakeArmed && fabsf(s) > SHAKE_THRESH_MS2
-        && fabsf(s) > fabsf(sf) && fabsf(s) > fabsf(sd)) {   // right 分量占优
+    if (g.rollArmed && fabsf(rollDeg) > ROLL_TRIGGER_DEG) {
         int gear = gearEst > 0 ? gearEst : 2;               // 快照无档位回读, 用本地估计
-        int next = gear + (s > 0 ? 1 : -1);
+        int next = gear + (rollDeg > 0 ? -1 : 1);           // 左翻降/右翻升
         if (next >= 1 && next <= 4) {
             fanSetPower((uint8_t)next);
-            flashColor = (s > 0) ? C_CYAN : C_ORANGE;       // 右摇闪青/左摇闪橙
+            flashColor = (next > gear) ? C_CYAN : C_ORANGE; // 升档闪青/降档闪橙
             g.lastShakeGear = (int8_t)next;
         } else {
             flashColor = C_RED;                             // 到头闪红
             g.lastShakeGear = (int8_t)gear;
         }
         flashUntilMs = now + GEAR_FLASH_MS;
-        g.shakeArmed = false;                               // 缴械, 等回稳重武装
+        g.rollArmed = false;                                // 缴械, 等回中重武装
         g.settleStartMs = 0;
-        g.pitchSuppressUntilMs = now + SHAKE_PITCH_COOLDOWN_MS;  // 甩手附带俯仰不调速
+        g.pitchSuppressUntilMs = now + SHAKE_PITCH_COOLDOWN_MS;  // 翻滚附带俯仰不调速
         g.gearDispUntilMs = now + GEAR_DISP_MS;                  // 手势屏顶替显示 GEAR
-        g.speedSyncMs = now;   // 换挡后设备转速变为档位校准值, 等轮询回读真实 PWM(2026-08-03 反馈)
-        Serial.printf("[gesture] shake s=%.2f gear %d->%d\n", s, gear, next);
+        g.speedSyncMs = now;   // 换挡后等轮询回读真实 PWM
+        Serial.printf("[gesture] roll %.1f deg gear %d->%d\n", rollDeg, gear, next);
     }
 
     // --- 通道2: 举/摆(速率模式调速, 体感俯仰稳态) ---
-    g.lp.x += EMA_ALPHA * (a.x - g.lp.x);
-    g.lp.y += EMA_ALPHA * (a.y - g.lp.y);
-    g.lp.z += EMA_ALPHA * (a.z - g.lp.z);
-    if (now < g.pitchSuppressUntilMs) { dirty = true; return; }   // 甩后冷却
-    if (g.pitchSuppressUntilMs != 0) {   // 冷却刚结束: 重定基线, 甩入的俯仰不残留
+    if (now < g.pitchSuppressUntilMs) { dirty = true; return; }   // 换挡后冷却
+    if (g.pitchSuppressUntilMs != 0) {   // 冷却刚结束: 重定基线, 翻滚带入的俯仰不残留
         g.pBase = vdot(g.lp, g.fwd);
         g.emaP = 0;
         g.pitchSuppressUntilMs = 0;
@@ -750,7 +749,7 @@ static void renderGesture() {
     if (millis() < flashUntilMs) {
         canvas.fillRect(6, 112, SCR_W - 12, 20, flashColor);
     } else {
-        txtC(114, "摇:换档  举/摆:调速", C_GREY, &fonts::efontCN_12);
+        txtC(114, "翻:换档  举/摆:调速", C_GREY, &fonts::efontCN_12);
     }
     txtC(140, "松开 BtnA 确认", C_GREY, &fonts::efontCN_12);
 }
