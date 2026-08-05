@@ -111,8 +111,9 @@ static void renderDashboard() {
     drawMotRow(150, false);
     drawBusRow(168);
 
-    txt(4,  200, "A按住:手势 2x:开关", C_GREY, &fonts::efontCN_12);
-    txt(4,  218, "3x:Turbo  B:菜单",  C_GREY, &fonts::efontCN_12);
+    txt(4,  182, "A按住:手势 2x:开关", C_GREY, &fonts::efontCN_12);
+    txt(4,  200, "3x:Turbo  B:菜单",  C_GREY, &fonts::efontCN_12);
+    txt(4,  218, "B按住:Turbo松手即停",  C_GREY, &fonts::efontCN_12);
 }
 
 static void renderTurboDash() {
@@ -496,7 +497,7 @@ static void renderConnMgmt() {
     if (connMsg[0]) txtC(202, connMsg, C_ORANGE, &fonts::efontCN_12);
     else if (millis() < scanUntilMs) txtC(202, "扫描中…", C_ORANGE, &fonts::efontCN_12);
     txt(4, 204, "B:下一项 2xB:上一项", C_GREY, &fonts::efontCN_12);
-    txt(4, 222, "A:执行  B:遍历 2xB:反向", C_GREY, &fonts::efontCN_12);
+    txt(4, 222, "A:执行", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderConnecting() {

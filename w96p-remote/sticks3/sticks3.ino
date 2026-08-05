@@ -256,8 +256,22 @@ static void dispatchButtons() {
             else if (n == 3) fanSetTurbo(snap.turboRemainS == 0);
         }
         if (M5.BtnA.pressedFor(GESTURE_HOLD_MS)) { enterGesture(); break; }
+        // 按住 B = 点动 Turbo, 松手即停(2026-08-05 提议; 与 3xA 锁存互补)
+        static bool turboHold = false;
+        static uint32_t btnBSuppressUntilMs = 0;
+        if (online && !turboHold && M5.BtnB.pressedFor(GESTURE_HOLD_MS)) {
+            turboHold = true;
+            fanSetTurbo(true);          // turboRemainS>0 → 自动切 TurboDash 看倒计时
+            dirty = true;
+        }
+        if (turboHold && M5.BtnB.wasReleased()) {
+            turboHold = false;
+            fanSetTurbo(false);
+            btnBSuppressUntilMs = millis() + 600;   // 吞掉松手后的单击判定, 防误进菜单
+            dirty = true;
+        }
         // BtnB 全局只走 btnBNav(decided): 与菜单共用判定窗, 防同一次点击被两屏重复消费(2026-08-05 bug)
-        if (btnBNav() == 1) {
+        if (btnBNav() == 1 && millis() >= btnBSuppressUntilMs) {
             if (scr == SCR_TURBO_DASH) scr = SCR_DASHBOARD;
             else { scr = SCR_MENU; menuIdx = 0; }   // 看板进菜单回到第一项
             dirty = true;
