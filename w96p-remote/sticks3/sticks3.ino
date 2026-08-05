@@ -928,12 +928,12 @@ void setup() {
 
 void loop() {
     M5.update();             // 铁律: 每轮刷新按键状态
+    dispatchButtons();       // 按键优先: 在 BLE 阻塞前响应
 #if !W96P_MOCK
-    cli.update();            // BLE 写队列 + 500ms 轮询
+    cli.update();            // BLE 写队列 + 分摊轮询(每次最多一个 GATT 读)
 #endif
 
     handleEvents();
-    dispatchButtons();
     if (scr == SCR_GESTURE) gestureTick();
 
     // turboRemainS>0 自动切 TurboDash 样式(设计 §2)

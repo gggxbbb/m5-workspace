@@ -248,6 +248,46 @@ struct Client::Impl {
         lastPollMs = snap.updatedMs;
         if (cb.onSnapshot) cb.onSnapshot(snap);
     }
+
+    // ---------- 分摊轮询 ----------
+    // 7 个特征每轮 update() 只读 1 个（round-robin），单个 GATT RTT 的阻塞取代
+    // 7 连读的长阻塞——手持遥控器场景下按键不被饿死。完整周期 ≈ kPollIntervalMs。
+    uint8_t  pollSlot = 0;
+    uint32_t lastSlotMs = 0;
+
+    void pollStep() {
+        constexpr uint32_t kSlotMs = kPollIntervalMs / 7;
+        uint32_t now = millis();
+        if (now - lastSlotMs < kSlotMs) return;
+        lastSlotMs = now;
+
+        NimBLEAttValue v;
+        bool done = false;
+        switch (pollSlot) {
+        case 0: if (readChar(findChar(uuid::kBatteryInfo), v))
+                    parseBatteryInfo(v.data(), v.size(), snap.battery); break;
+        case 1: if (readChar(findChar(uuid::kPowerStatus), v))
+                    parsePowerStatus(v.data(), v.size(), snap.power); break;
+        case 2: if (readChar(findChar(uuid::kMotorInfo), v))
+                    parseMotorInfo(v.data(), v.size(), kProfileW96P, snap.motor); break;
+        case 3: if (readChar(findChar(uuid::kFanSpeed), v) && v.size() >= 1)
+                    snap.speed = v.data()[0]; break;
+        case 4: if (readChar(findChar(uuid::kTimer), v) && v.size() >= 2)
+                    snap.timerRemainS = u16be(v.data()); break;
+        case 5: if (readChar(findChar(uuid::kNatureWind), v) && v.size() >= 1)
+                    snap.natureOn = v.data()[0]; break;
+        case 6: if (readChar(findChar(uuid::kTurboCountdown), v) && v.size() >= 2)
+                    snap.turboRemainS = u16be(v.data());
+                done = true; break;
+        }
+        pollSlot = (pollSlot + 1) % 7;
+        if (done) {   // 完整周期结束才发快照
+            snap.valid = true;
+            snap.updatedMs = now;
+            lastPollMs = now;
+            if (cb.onSnapshot) cb.onSnapshot(snap);
+        }
+    }
 };
 
 // ================= 公共 API =================
@@ -345,9 +385,9 @@ void Client::update() {
 
     im.processQueue();                              // §8.1 串行写
 
-    // §8.3：写队列非空时跳过本轮轮询
-    if (im.qCount == 0 && millis() - im.lastPollMs >= kPollIntervalMs) {
-        im.poll();
+    // §8.3：写队列非空时跳过轮询；否则每次 update 最多一个读（按键不被饿死）
+    if (im.qCount == 0) {
+        im.pollStep();
     }
 }
 
