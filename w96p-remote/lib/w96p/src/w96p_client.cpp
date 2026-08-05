@@ -7,6 +7,7 @@
 //   §8.10 连接后缓存全部特征
 //   §8.11 断开时清理缓存与队列
 #include "w96p_client.h"
+#include "w96p_dfu.h"
 
 #include <Arduino.h>
 #include <NimBLEDevice.h>
@@ -54,7 +55,7 @@ struct Client::Impl {
 
     // 特征缓存（§8.10）
     struct CharSlot { const char* chrUuid; NimBLERemoteCharacteristic* chr; };
-    CharSlot slots[19] = {
+    CharSlot slots[20] = {
         {uuid::kPower, nullptr},         {uuid::kTimer, nullptr},
         {uuid::kFanSpeed, nullptr},      {uuid::kNatureWind, nullptr},
         {uuid::kShutdownDelay, nullptr}, {uuid::kGearDownMode, nullptr},
@@ -62,15 +63,32 @@ struct Client::Impl {
         {uuid::kLight, nullptr},         {uuid::kTurboCountdown, nullptr},
         {uuid::kBleName, nullptr},
         {uuid::kBatteryInfo, nullptr},   {uuid::kPowerStatus, nullptr},
-        {uuid::kMotorInfo, nullptr},     {uuid::kPowerConfig, nullptr},
+        {uuid::kMotorInfo, nullptr},
         {uuid::kNatureSum, nullptr},     {uuid::kNatureTime, nullptr},
         {uuid::kNatureCurve, nullptr},   {uuid::kNatureCtrl, nullptr},
+        {uuid::kDfuWrite, nullptr},      {uuid::kDfuNotify, nullptr},
     };
 
     // 写队列（环形 FIFO）
     WriteJob queue[kMaxQueue];
     int      qHead = 0, qCount = 0;
     uint32_t nextAttemptMs = 0;             // 队首任务下次可执行时间
+
+    // ---------- DFU（仅版本查询；FEE2 notify → 帧解析） ----------
+    dfu::FrameParser dfuParser;
+    volatile bool fwVerPending = false;
+    uint8_t fwVerMarker = 0;
+
+    void onDfuNotify(const uint8_t* data, size_t len) {
+        uint8_t payload[250];
+        for (size_t i = 0; i < len; i++) {
+            size_t n = dfuParser.feed(data[i], payload);
+            if (n >= 2 && (payload[0] & 0x7F) == dfu::DATA_VERSION) {
+                fwVerMarker = payload[1];       // marker = major*10 + minor
+                fwVerPending = true;
+            }
+        }
+    }
 
     // ---- NimBLE 回调对象（必须是成员，生命周期覆盖整个连接） ----
     struct ScanCb : NimBLEScanCallbacks {
@@ -135,9 +153,10 @@ struct Client::Impl {
             {uuid::kLight, uuid::kSvcMain},         {uuid::kTurboCountdown, uuid::kSvcMain},
             {uuid::kBleName, uuid::kSvcBleCfg},
             {uuid::kBatteryInfo, uuid::kSvcPower},  {uuid::kPowerStatus, uuid::kSvcPower},
-            {uuid::kMotorInfo, uuid::kSvcPower},    {uuid::kPowerConfig, uuid::kSvcPower},
+            {uuid::kMotorInfo, uuid::kSvcPower},
             {uuid::kNatureSum, uuid::kSvcNature},   {uuid::kNatureTime, uuid::kSvcNature},
             {uuid::kNatureCurve, uuid::kSvcNature}, {uuid::kNatureCtrl, uuid::kSvcNature},
+            {uuid::kDfuWrite, uuid::kSvcDfu},       {uuid::kDfuNotify, uuid::kSvcDfu},
         };
         for (const auto& m : kMap) {
             NimBLERemoteService* svc = client->getService(NimBLEUUID(m.svc));
@@ -356,6 +375,13 @@ bool Client::connectIndex(int i) {
 
     im.isConn = true;
     im.cacheChars();                                // §8.10
+    // 订阅 FEE2 版本响应（DFU 查询用）
+    if (NimBLERemoteCharacteristic* dfuNtf = im.findChar(uuid::kDfuNotify)) {
+        Impl* self = &im;
+        dfuNtf->subscribe(true, [self](NimBLERemoteCharacteristic*, uint8_t* d, size_t n, bool) {
+            self->onDfuNotify(d, n);
+        });
+    }
     im.lastPollMs = 0;                              // 立即触发首轮轮询
     if (im.cb.onConn) im.cb.onConn(true);
     return true;
@@ -507,17 +533,6 @@ bool Client::setPowSwitch(const char* key, bool enable) {
                                reinterpret_cast<const uint8_t*>(cmd), uint8_t(n), true);
 }
 
-bool Client::setPowRegister(uint8_t offset, uint8_t value) {
-    if (!impl_) return false;
-    char key[8];
-    snprintf(key, sizeof(key), "POW_%02X", offset); // 如 POW_1A / POW_2C
-    char cmd[24];
-    // UI 侧已做读-改-写（§8.5），这里只负责发送
-    const size_t n = buildAsciiCmd(cmd, sizeof(cmd), key, value);
-    return n && impl_->enqueue(uuid::kSvcPower, uuid::kPowerConfig,
-                               reinterpret_cast<const uint8_t*>(cmd), uint8_t(n), true);
-}
-
 bool Client::powerClear() {
     if (!impl_) return false;
     char cmd[16];
@@ -555,22 +570,22 @@ bool blockingRead(NimBLERemoteCharacteristic* chr, int attempts,
 }
 } // namespace
 
-bool Client::readPowerConfig(PowerConfig& out) {
-    if (!connected()) return false;
-    NimBLERemoteCharacteristic* chr = impl_->findChar(uuid::kPowerConfig);
-    if (!chr) { Serial.println("[w96p] readPowerConfig: char not in cache (fan may not expose FFD4)"); return false; }
-    const uint8_t* d = nullptr;
-    size_t n = 0;
-    NimBLEAttValue keep;
-    if (!blockingRead(chr, kWriteRetries, d, n, keep)) {
-        Serial.println("[w96p] readPowerConfig: read failed/empty");
-        return false;
+bool Client::readFwVersion(uint8_t& marker) {
+    if (!impl_ || !connected()) return false;
+    NimBLERemoteCharacteristic* chr = impl_->findChar(uuid::kDfuWrite);
+    if (!chr) { Serial.println("[w96p] dfu: FEE1 not found"); return false; }
+    uint8_t pl = dfu::CTRL_GET_VERSION | 0x80;      // bit7=需要 ACK
+    uint8_t frame[8];
+    size_t n = dfu::buildFrame(frame, 0, &pl, 1);   // key=0 调试模式
+    impl_->fwVerPending = false;
+    if (!chr->writeValue(frame, uint16_t(n), true)) return false;
+    uint32_t t0 = millis();
+    while (millis() - t0 < 800) {
+        if (impl_->fwVerPending) { marker = impl_->fwVerMarker; return true; }
+        delay(10);
     }
-    if (!parsePowerConfig(d, n, out)) {
-        Serial.printf("[w96p] readPowerConfig: short read n=%u (need 16)\n", (unsigned)n);
-        return false;
-    }
-    return true;
+    Serial.println("[w96p] dfu: version query timeout");
+    return false;
 }
 
 bool Client::readNatureCurve(uint8_t out128[128]) {

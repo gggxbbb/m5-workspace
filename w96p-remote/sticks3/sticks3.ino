@@ -64,8 +64,8 @@ static bool   dirty = true;              // 脏标记: 仅脏时重绘(设计 §
 
 static w96p::Client   cli;
 static w96p::Snapshot snap;              // client 500ms 轮询快照(mock 时为假数据)
-static w96p::PowerConfig powCfg;         // 进详情页读一次
-static bool   powCfgValid = false;
+static uint8_t fwMarker = 0;             // DFU 读到的固件版本(major*10+minor)
+static bool    fwValid = false;
 
 static bool online        = false;
 static bool manualOffline = false;       // 手动断开=true, 抑制自动重扫
@@ -473,10 +473,9 @@ static ConnKind connItemAt(int sel, int& devIdx) {
 static void enterDetails() {
     detailsPage = 0;
 #if W96P_MOCK
-    powCfg = {}; powCfg.powLevel = 3; powCfg.powVer = 17; powCfg.powSink = 1; powCfg.powSrc = 2;
-    powCfgValid = true;
+    fwMarker = 17; fwValid = true;
 #else
-    powCfgValid = online && cli.readPowerConfig(powCfg);   // 阻塞读, 补齐固件版本/快充(设计 §5.8)
+    fwValid = online && cli.readFwVersion(fwMarker);   // DFU 版本查询(marker=major*10+minor)
 #endif
     scr = SCR_DETAILS;
     dirty = true;
@@ -781,19 +780,6 @@ static void renderGesture() {
     txtC(140, "松开 BtnA 确认", C_GREY, &fonts::efontCN_12);
 }
 
-// 快充协议名（ble-protocol.md §5.4）
-static const char* sinkName(uint8_t v) {
-    switch (v) { case 1: return "PD"; case 3: return "HV"; case 4: return "AFC";
-                 case 5: return "FCP"; case 6: return "SCP"; case 7: return "PE1.1";
-                 default: return "--"; }   // 0=非快充
-}
-static const char* srcName(uint8_t v) {
-    switch (v) { case 1: return "PD"; case 2: return "PPS"; case 3: return "QC2.0";
-                 case 4: return "QC3.0"; case 5: return "FCP"; case 6: return "PE2.0";
-                 case 7: return "SFCP"; case 8: return "AFC"; case 9: return "SCP";
-                 case 10: return "LVDC1"; default: return "--"; }
-}
-
 static void renderDetails() {
     if (detailsPage == 0) {
         txt(4, 2, "STATUS 实时", C_CYAN, &fonts::efontCN_12);
@@ -889,13 +875,9 @@ static void renderDetails() {
         }
         snprintf(buf, sizeof(buf), "MAC %s", connectedAddr[0] ? connectedAddr : "--");
         txt(4, 104, buf, C_GREY, &fonts::efontCN_12);
-        if (powCfgValid) {
-            snprintf(buf, sizeof(buf), "FW  v%.1f (powVer %d)", powCfg.powVer / 10.0f, powCfg.powVer);
+        if (fwValid) {
+            snprintf(buf, sizeof(buf), "FW  v%u.%u", fwMarker / 10, fwMarker % 10);
             txt(4, 122, buf, C_WHITE, &fonts::efontCN_12);
-            snprintf(buf, sizeof(buf), "sink %-4s src %s", sinkName(powCfg.powSink), srcName(powCfg.powSrc));
-            txt(4, 140, buf, C_WHITE, &fonts::efontCN_12);
-            snprintf(buf, sizeof(buf), "powLevel %d [未确认]", powCfg.powLevel);
-            txt(4, 158, buf, C_ORANGE, &fonts::efontCN_12);
         } else {
             txt(4, 122, "FW  --", C_GREY, &fonts::efontCN_12);
         }
@@ -1028,6 +1010,11 @@ static void handleEvents() {
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
+    Serial.begin(115200);   // 必须显式: M5Unified 0.2.19 的 serial_baudrate 默认 0, M5.begin 不初始化 Serial
+    // IR 发射管挂在 L3A 轨常供电, G46 悬空会被驱动电路拉成常亮——显式关断
+    // (极性 [未确认]: 先按低电平关断, 若仍亮则改 HIGH)
+    pinMode(46, OUTPUT);
+    digitalWrite(46, LOW);
     M5.Display.setRotation(0);
     M5.Display.setBrightness(128);
     canvas.setPsram(true);   // StickS3 有 8MB PSRAM
@@ -1087,4 +1074,6 @@ void loop() {
 
     render();
     delay(5);
+    static uint32_t hb = 0;   // 临时: 串口通路诊断(事后移除)
+    if (millis() - hb > 1000) { hb = millis(); Serial.println("[hb]"); }
 }

@@ -36,6 +36,7 @@ static void printSnap(const char* tag) {
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
+    Serial.begin(115200);   // 必须显式: M5Unified 0.2.19 的 serial_baudrate 默认 0
     Serial.println("\n=== W96P client demo ===");
 
     cli.begin({
@@ -139,18 +140,12 @@ void setup() {
     cli.setPowSwitch("POW_C_HI",  g_snap.power.cHiEnabled);
     pump(1200);
 
-    // 13. 快充配置：读 16B 打印 → 原值写回一个寄存器（读-改-写演示）
-    w96p::PowerConfig pc;
-    if (cli.readPowerConfig(pc)) {
-        Serial.printf(">> powerConfig: lvl %d ver %d sink %d src %d coreTemp %d\n",
-                      pc.powLevel, pc.powVer, pc.powSink, pc.powSrc, pc.coreTemp);
-        Serial.printf("  regs 1A=%02X 1C=%02X 1D=%02X 1E=%02X 2A=%02X 2B=%02X 2C=%02X\n",
-                      pc.r1A, pc.r1C, pc.r1D, pc.r1E, pc.r2A, pc.r2B, pc.r2C);
-        Serial.println(">> setPowRegister(6, same) read-modify-write demo");
-        cli.setPowRegister(6, pc.r1A);
-        pump(1000);
+    // 13. DFU 固件版本查询（替代已废弃的 FFD4 快充配置）
+    uint8_t marker;
+    if (cli.readFwVersion(marker)) {
+        Serial.printf(">> fw version: v%u.%u (marker %u)\n", marker / 10, marker % 10, marker);
     } else {
-        Serial.println("!! readPowerConfig failed");
+        Serial.println("!! readFwVersion failed");
     }
 
     waitSnap(2000);

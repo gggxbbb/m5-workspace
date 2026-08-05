@@ -54,15 +54,14 @@ public:
     bool setBatteryCap(uint32_t mwh);       // BAT_CAP=
     bool batteryClear();                    // BAT_CLR=0,
     bool setPowSwitch(const char* key, bool enable); // POW_C_OUT/POW_C_IN/POW_C_HI（内部转反逻辑）
-    bool setPowRegister(uint8_t offset, uint8_t value); // POW_XX 位域（FFD4，危险，UI 需确认）
     bool powerClear();                      // POW_CLR=0,
     bool setBleSn(bool on);                 // BLE_SN=1/0,
 
     // ---- 单次读取（阻塞，连接后有效；返回 false=失败）----
-    bool readPowerConfig(PowerConfig& out);
     bool readNatureCurve(uint8_t out128[128]);
     bool readNatureMeta(uint8_t& points, uint32_t& totalTime);
     bool readSpeedCalib(uint8_t out4[4]);   // FFF7 各档位校准转速 %，连接后读一次
+    bool readFwVersion(uint8_t& marker);    // DFU 版本查询, marker = major*10+minor
 
 private:
     struct Impl;                            // PIMPL：NimBLE 类型不外泄到头文件

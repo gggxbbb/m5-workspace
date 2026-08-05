@@ -61,16 +61,6 @@ bool parseMotorInfo(const uint8_t* d, size_t n, const Profile& p, MotorInfo& o) 
     return true;
 }
 
-bool parsePowerConfig(const uint8_t* d, size_t n, PowerConfig& o) {
-    if (n < 16) return false;
-    // 前 6 字节连续，拷进来再处理；寄存器字节按偏移单取
-    memcpy(&o.powLevel, d, 5);
-    memcpy(&o.coreTemp, d + 4, 2); o.coreTemp = int16_t(__builtin_bswap16(o.coreTemp));
-    o.r1A = d[6];  o.r1C = d[7];  o.r1D = d[8];  o.r1E = d[9];
-    o.r2A = d[13]; o.r2B = d[14]; o.r2C = d[15];
-    return true;
-}
-
 size_t buildPower(uint8_t gear) { return gear > 4 ? 4 : gear; }
 
 size_t buildSpeed(uint8_t pct, uint8_t* buf) {

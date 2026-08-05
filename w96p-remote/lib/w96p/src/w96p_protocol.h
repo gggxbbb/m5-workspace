@@ -31,12 +31,16 @@ inline const char* kBleName       = "0000ffc1-0000-1000-8000-00805f9b34fb"; // R
 inline const char* kBatteryInfo   = "0000ffd1-0000-1000-8000-00805f9b34fb"; // R 30B / W BAT_CAP=,BAT_CLR=
 inline const char* kPowerStatus   = "0000ffd2-0000-1000-8000-00805f9b34fb"; // R ≥11B / W POW_C_OUT/IN/HI,POW_CLR
 inline const char* kMotorInfo     = "0000ffd3-0000-1000-8000-00805f9b34fb"; // R ≥4B
-inline const char* kPowerConfig   = "0000ffd4-0000-1000-8000-00805f9b34fb"; // R ≥16B / W POW_XX=<byte>,
+// FFD4 POWER_CONFIG 已废弃: 合规失效, 不读不写(2026-08-03 用户裁定)
 // 自然风 FFE0
 inline const char* kNatureSum     = "0000ffe1-0000-1000-8000-00805f9b34fb"; // R u8 点数
 inline const char* kNatureTime    = "0000ffe2-0000-1000-8000-00805f9b34fb"; // R u32BE 总时长
 inline const char* kNatureCurve   = "0000ffe3-0000-1000-8000-00805f9b34fb"; // RW 128×u8 %
 inline const char* kNatureCtrl    = "0000ffe4-0000-1000-8000-00805f9b34fb"; // W 01保存/02恢复默认
+// DFU FEE0（仅版本查询）
+inline const char* kSvcDfu        = "0000fee0-0000-1000-8000-00805f9b34fb";
+inline const char* kDfuWrite      = "0000fee1-0000-1000-8000-00805f9b34fb"; // W 帧协议
+inline const char* kDfuNotify     = "0000fee2-0000-1000-8000-00805f9b34fb"; // N 帧协议
 } // namespace uuid
 
 // ---------- 机型档案 ----------
@@ -67,17 +71,11 @@ struct MotorInfo {            // FFD3，≥4 字节
     bool     block;                             // (raw & 0xF7) == 1
     uint16_t voltageMv;                         // >20000 视为脏数据 → 0
 };
-struct PowerConfig {          // FFD4，≥16 字节（位域原样保留，语义见 ble-protocol.md §5.4）
-    uint8_t powLevel, powVer, powSink, powSrc;
-    int16_t coreTemp;
-    uint8_t r1A, r1C, r1D, r1E, r2A, r2B, r2C;  // 寄存器字节，写回必须读-改-写
-};
 
 // ---------- 解析（输入原始字节，长度不足返回 false） ----------
 bool parseBatteryInfo(const uint8_t* d, size_t n, BatteryInfo& out);
 bool parsePowerStatus(const uint8_t* d, size_t n, PowerStatus& out);
 bool parseMotorInfo(const uint8_t* d, size_t n, const Profile& p, MotorInfo& out);
-bool parsePowerConfig(const uint8_t* d, size_t n, PowerConfig& out);
 
 // ---------- 大端读写（小端主机：memcpy + bswap，编译器优化为 load+rotate） ----------
 inline uint16_t u16be(const uint8_t* d) { uint16_t v; memcpy(&v, d, 2); return __builtin_bswap16(v); }
