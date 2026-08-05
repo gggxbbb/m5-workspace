@@ -465,9 +465,14 @@ static void renderConnMgmt() {
         case CI_BACK:    snprintf(buf, sizeof(buf), "%s 返回", cur ? ">" : " "); break;
         case CI_DEVICE: {
             const w96p::Client::Found* f = foundAt(devIdx);
-            bool isConn = online && strcmp(f->name, connectedName) == 0;
-            snprintf(buf, sizeof(buf), "%s %s%s", cur ? ">" : " ",
-                     f->name[0] ? f->name : f->addr, isConn ? "*" : "");
+            bool isConn = online && strcmp(f->addr, connectedAddr) == 0;   // 按 MAC 判: SN 关闭时多台都叫 W96P
+            // 名字无 '_' (SN 广播关)时附 MAC 尾两位区分同名设备
+            if (f->name[0] && !strchr(f->name, '_') && strlen(f->addr) >= 5)
+                snprintf(buf, sizeof(buf), "%s %s %s%s", cur ? ">" : " ",
+                         f->name, f->addr + strlen(f->addr) - 5, isConn ? "*" : "");
+            else
+                snprintf(buf, sizeof(buf), "%s %s%s", cur ? ">" : " ",
+                         f->name[0] ? f->name : f->addr, isConn ? "*" : "");
             break;
         }
         }

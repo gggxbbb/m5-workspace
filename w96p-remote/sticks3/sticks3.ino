@@ -226,7 +226,7 @@ static void enterSettings() {
     uint16_t u16; uint8_t u8;
     if (online && cli.readShutdownDelay(u16))  setShutdownS = u16;
     if (online && cli.readGearDownMode(u8))    setGearDown = u8;
-    // BLE_SN 开关态 = 广播名是否带 '_': 开 SN 广播时名字为 W96P_{SN}, 关为 W96P-{MAC后4位}
+    // BLE_SN 开关态 = 广播名是否带 '_': 开 SN 广播时名字为 W96P_{SN}, 关时仅 W96P(实测 2026-08-05)
     if (online) setBleSn = strchr(connectedName, '_') ? 1 : 0;
     scr = SCR_SETTINGS;
     dirty = true;
