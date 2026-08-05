@@ -15,3 +15,6 @@ build/
 # 系统文件
 Thumbs.db
 Desktop.ini
+
+# 分发产物(分享包)
+dist/
