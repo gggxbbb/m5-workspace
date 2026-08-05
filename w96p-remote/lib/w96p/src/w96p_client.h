@@ -67,7 +67,7 @@ public:
     bool setTurboTime(uint16_t sec);        // FFF8 写 Turbo 时长 1-600(0=恢复默认)
     bool readShutdownDelay(uint16_t& sec);  // FFF5 休眠延时(0=永不)
     bool readGearDownMode(uint8_t& mode);   // FFF6 0逐级/1直停
-    bool readBleSn(bool& enabled);          // FFC1 文本解析 BLE_SN 状态
+    // (BLE_SN 状态不读 FFC1: 由广播名 '_' 后缀判定, 见 sticks3 enterSettings)
 
 private:
     struct Impl;                            // PIMPL：NimBLE 类型不外泄到头文件

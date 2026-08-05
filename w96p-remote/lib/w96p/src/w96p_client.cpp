@@ -692,24 +692,4 @@ bool Client::readGearDownMode(uint8_t& mode) {
     return true;
 }
 
-bool Client::readBleSn(bool& enabled) {
-    if (!connected()) return false;
-    const uint8_t* d = nullptr;
-    size_t n = 0;
-    NimBLEAttValue keep;
-    if (!blockingRead(impl_->findChar(uuid::kBleName), kWriteRetries, d, n, keep) || n < 1)
-        return false;
-    // FFC1 读回 ASCII 文本, 含 "BLE_SN=1" 即开启(web SDK readBleSn 同款判定)
-    enabled = false;
-    for (size_t i = 0; i + 7 <= n; i++) {
-        if (memcmp(d + i, "BLE_SN=", 7) == 0) {
-            enabled = (i + 7 < n) && d[i + 7] == '1';
-            return true;
-        }
-        if (memcmp(d + i, "BLE_SN1", 7) == 0) { enabled = true; return true; }
-    }
-    enabled = false;
-    return true;
-}
-
 } // namespace w96p

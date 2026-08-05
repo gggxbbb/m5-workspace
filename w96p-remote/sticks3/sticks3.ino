@@ -223,10 +223,11 @@ static void enterDetails() {
 static void enterSettings() {
     settingsIdx = 0;
     // 进设置页读当前值(每次进入重读, 保持新鲜; 失败留旧值/--)
-    uint16_t u16; uint8_t u8; bool b;
+    uint16_t u16; uint8_t u8;
     if (online && cli.readShutdownDelay(u16))  setShutdownS = u16;
     if (online && cli.readGearDownMode(u8))    setGearDown = u8;
-    if (online && cli.readBleSn(b))            setBleSn = b ? 1 : 0;
+    // BLE_SN 开关态 = 广播名是否带 '_': 开 SN 广播时名字为 W96P_{SN}, 关为 W96P-{MAC后4位}
+    if (online) setBleSn = strchr(connectedName, '_') ? 1 : 0;
     scr = SCR_SETTINGS;
     dirty = true;
 }
