@@ -592,4 +592,15 @@ bool Client::readNatureMeta(uint8_t& points, uint32_t& totalTime) {
     return true;
 }
 
+bool Client::readSpeedCalib(uint8_t out4[4]) {
+    if (!connected() || !out4) return false;
+    const uint8_t* d = nullptr;
+    size_t n = 0;
+    NimBLEAttValue keep;
+    if (!blockingRead(impl_->findChar(uuid::kSpeedCalib), kWriteRetries, d, n, keep) || n < 4)
+        return false;
+    memcpy(out4, d, 4);
+    return true;
+}
+
 } // namespace w96p

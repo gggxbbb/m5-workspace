@@ -100,6 +100,8 @@ static int connSel   = 0;
 // 快照没有的本地状态(GEA/LGT 无回读特征, 只跟踪本机下发值)
 static uint8_t gearEst  = 0;             // 0=未知
 static uint8_t lightEst = 0xFF;          // 0xFF=未知
+static uint8_t gearSpeeds[4] = { 10, 35, 70, 100 };  // 档位校准转速%, 连接时经 FFF7 更新
+static bool    calibValid = false;
 
 // 手势换档/到头闪屏
 static uint16_t flashColor = 0;
@@ -367,6 +369,9 @@ static void gestureTick() {
             fanSetPower((uint8_t)next);
             flashColor = (next > gear) ? C_CYAN : C_ORANGE; // 升档闪青/降档闪橙
             g.lastShakeGear = (int8_t)next;
+            // 档位校准值即真实转速: 立即覆盖本地(轮询 resync 仍作兜底)
+            g.speedF = gearSpeeds[next - 1];
+            g.lastSent = gearSpeeds[next - 1];
         } else {
             flashColor = C_RED;                             // 到头闪红
             g.lastShakeGear = (int8_t)gear;
@@ -724,11 +729,11 @@ static void renderGesture() {
         txtC(140, "松开 BtnA 退出", C_GREY, &fonts::efontCN_12);
         return;
     }
-    // 甩后 GEAR 顶替 PWM 显示(2026-08-03 真机反馈)
+    // 换挡后 GEAR 顶替 PWM 显示(2026-08-03 真机反馈)
     if (millis() < g.gearDispUntilMs && g.lastShakeGear > 0) {
-        snprintf(buf, sizeof(buf), "GEAR %d", g.lastShakeGear);
+        snprintf(buf, sizeof(buf), "GEAR %d · %d%%", g.lastShakeGear, gearSpeeds[g.lastShakeGear - 1]);
         txtC(32, buf, C_ORANGE, &fonts::Font4);
-        bar(6, 66, SCR_W - 12, 8, g.lastShakeGear * 25, C_ORANGE);
+        bar(6, 66, SCR_W - 12, 8, gearSpeeds[g.lastShakeGear - 1], C_ORANGE);
     } else {
         uint8_t pct = (uint8_t)(g.speedF + 0.5f);
         snprintf(buf, sizeof(buf), "%d %%", pct);
@@ -916,6 +921,11 @@ static void handleEvents() {
             pendingConnect = false;
             connMsg[0] = 0;
             if (scr == SCR_CONNECTING || scr == SCR_CONN_MGMT) scr = SCR_DASHBOARD;
+#if !W96P_MOCK
+            // 连接即读档位校准转速(FFF7), 换挡后本地立即可知真实 PWM(2026-08-03 反馈)
+            uint8_t cal[4];
+            if (cli.readSpeedCalib(cal)) { memcpy(gearSpeeds, cal, 4); calibValid = true; }
+#endif
         } else {
             snap.valid = false;
             if (pendingConnect) {                  // 手动连接失败, 留在本页

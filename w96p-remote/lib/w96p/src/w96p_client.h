@@ -62,6 +62,7 @@ public:
     bool readPowerConfig(PowerConfig& out);
     bool readNatureCurve(uint8_t out128[128]);
     bool readNatureMeta(uint8_t& points, uint32_t& totalTime);
+    bool readSpeedCalib(uint8_t out4[4]);   // FFF7 各档位校准转速 %，连接后读一次
 
 private:
     struct Impl;                            // PIMPL：NimBLE 类型不外泄到头文件
