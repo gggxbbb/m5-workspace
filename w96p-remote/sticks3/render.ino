@@ -132,7 +132,7 @@ static void renderTurboDash() {
     drawBatRow(106);
     drawMotRow(124, true);
 
-    txtC(160, "3xA:退出Turbo", C_GREY, &fonts::efontCN_12);
+    txtC(228, "3xA:退出Turbo", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderMenu() {
@@ -169,8 +169,8 @@ static void renderMenu() {
         }
     }
     // 8 项腾出底部空间, 提示两行分开不溢出(2026-08-05 真机照片反馈)
-    txt(4, 196, "A:调节  B:下一项", C_GREY, &fonts::efontCN_12);
-    txt(4, 214, "2xB:上一项", C_GREY, &fonts::efontCN_12);
+    txt(4, 213, "A:调节  B:下一项", C_GREY, &fonts::efontCN_12);
+    txt(4, 228, "2xB:上一项", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderSettings() {
@@ -203,8 +203,8 @@ static void renderSettings() {
             canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
         }
     }
-    txt(4, 196, "A:进入/调节  B:下一项", C_GREY, &fonts::efontCN_12);
-    txt(4, 214, "2xB:上一项", C_GREY, &fonts::efontCN_12);
+    txt(4, 213, "A:进入/调节  B:下一项", C_GREY, &fonts::efontCN_12);
+    txt(4, 228, "2xB:上一项", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderPow() {
@@ -225,8 +225,8 @@ static void renderPow() {
             canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
         }
     }
-    txt(4, 170, "A:切换/返回  B:下一行", C_GREY, &fonts::efontCN_12);
-    txt(4, 188, "2xB:上一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 213, "A:切换/返回  B:下一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 228, "2xB:上一行", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderCalib() {
@@ -246,8 +246,8 @@ static void renderCalib() {
             canvas.drawString(buf, SCR_W - 4 - canvas.textWidth(buf), y);
         }
     }
-    txt(4, 190, "A短:-5  A长:+5  B:下一行", C_GREY, &fonts::efontCN_12);
-    txt(4, 208, "2xB:上一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 213, "A短:-5  A长:+5  B:下一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 228, "2xB:上一行", C_GREY, &fonts::efontCN_12);
 }
 
 static const char* editTargetName(EditTarget t) {
@@ -290,8 +290,8 @@ static void renderAdjust() {
     case M_LIGHT:   txtC(120, "A短按:循环0-4", C_GREY, &fonts::efontCN_12); break;
     default: break;
     }
-    txtC(170, "B:保存返回",      C_GREY, &fonts::efontCN_12);
-    txtC(188, "2xB:放弃",      C_GREY, &fonts::efontCN_12);
+    txtC(213, "B:保存返回",      C_GREY, &fonts::efontCN_12);
+    txtC(228, "2xB:放弃",      C_GREY, &fonts::efontCN_12);
 }
 
 static void renderGesture() {
@@ -444,7 +444,7 @@ static void renderDetails() {
             txt(4, 158, buf, C_WHITE, &fonts::efontCN_12);
         }
     }
-    txtC(210, "A:翻页  B:返回菜单", C_GREY, &fonts::efontCN_12);
+    txtC(228, "A:翻页  B:返回菜单", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderConnMgmt() {
@@ -494,10 +494,10 @@ static void renderConnMgmt() {
             canvas.drawFastHLine(4, y - 3, SCR_W - 8, C_GREY);
         }
     }
-    if (connMsg[0]) txtC(202, connMsg, C_ORANGE, &fonts::efontCN_12);
-    else if (millis() < scanUntilMs) txtC(202, "扫描中…", C_ORANGE, &fonts::efontCN_12);
-    txt(4, 204, "B:下一项 2xB:上一项", C_GREY, &fonts::efontCN_12);
-    txt(4, 222, "A:执行", C_GREY, &fonts::efontCN_12);
+    if (connMsg[0]) txtC(196, connMsg, C_ORANGE, &fonts::efontCN_12);
+    else if (millis() < scanUntilMs) txtC(196, "扫描中…", C_ORANGE, &fonts::efontCN_12);
+    txt(4, 213, "B:下一项 2xB:上一项", C_GREY, &fonts::efontCN_12);
+    txt(4, 228, "A:执行", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderConnecting() {
