@@ -37,6 +37,7 @@ public:
     bool connectIndex(int i);               // 连接扫描结果第 i 个
     void disconnect();
     bool connected() const;
+    int  rssi() const;                       // 实时链路 RSSI(dBm), 未连接返回 0
     void update();                          // loop() 中调用：驱动轮询/写队列
 
     // ---- 写入（自动排队串行化，协议 §8.1；失败重试 3×200ms；返回是否入队成功）----

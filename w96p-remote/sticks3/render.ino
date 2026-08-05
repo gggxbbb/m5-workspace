@@ -422,10 +422,11 @@ static void renderDetails() {
         canvas.drawFastHLine(0, 80, SCR_W, C_GREY);
         snprintf(buf, sizeof(buf), "DEV %s", connectedName[0] ? connectedName : "--");
         txt(4, 86, buf, C_WHITE, &fonts::efontCN_12);
-        // RSSI 单列一行(DEV 名开 SN 广播后很长, 同行放不下)
-        if (connectedName[0]) {
-            snprintf(buf, sizeof(buf), "RSSI %ddB", connectedRssi);
-            txt(4, 104, buf, C_GREY, &fonts::efontCN_12);
+        // RSSI 单列一行(DEV 名开 SN 广播后很长): 在线用实时链路值, 离线回退扫描值
+        int rssi = online && linkRssi ? linkRssi : connectedRssi;
+        if (connectedName[0] && rssi) {
+            snprintf(buf, sizeof(buf), "RSSI %ddB", rssi);
+            txt(4, 104, buf, online ? C_CYAN : C_GREY, &fonts::efontCN_12);
         }
         snprintf(buf, sizeof(buf), "MAC %s", connectedAddr[0] ? connectedAddr : "--");
         txt(4, 122, buf, C_GREY, &fonts::efontCN_12);
@@ -498,7 +499,7 @@ static void renderConnMgmt() {
 
 static void renderConnecting() {
     txtC(60, "W96P", C_WHITE);
-    txtC(100, online ? "连接中…" : "扫描中…", C_CYAN);
+    txtC(100, pendingConnect ? "连接中…" : "扫描中…", C_CYAN);   // 原误判 online: 连接期间 online 还没置位
     txtC(140, "未找到将进入离线看板", C_GREY, &fonts::efontCN_12);
 }
 

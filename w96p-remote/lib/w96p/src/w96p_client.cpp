@@ -426,6 +426,11 @@ bool Client::connected() const {
     return impl_ && impl_->isConn && impl_->client && impl_->client->isConnected();
 }
 
+int Client::rssi() const {
+    if (!connected()) return 0;              // 0 = 无链路/未知
+    return impl_->client->getRssi();
+}
+
 void Client::update() {
     if (!impl_) return;
     Impl& im = *impl_;

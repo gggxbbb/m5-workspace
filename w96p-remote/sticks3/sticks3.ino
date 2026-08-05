@@ -78,6 +78,7 @@ static volatile bool evtFoundPending= false;
 static char connectedName[32] = "";
 static char connectedAddr[18] = "";
 static int  connectedRssi     = 0;
+static int  linkRssi          = 0;    // 实时链路 RSSI(1s 轮询, 0=未知)
 
 static const MenuItem menu[8] = {
     { "风速",   M_PERCENT, ET_SPEED  }, { "定时",   M_MINUTES, ET_TIMER  }, { "自然风", M_TOGGLE, ET_NATURE },
@@ -131,6 +132,8 @@ static void doStartScan() {
     cli.startScan(SCAN_SECONDS);
     dirty = true;
 }
+static int pendingConnIdx = -1;   // 延迟连接: 先渲染一帧"连接中…"再进阻塞 connect
+
 static void doConnectIndex(int i) {
     const w96p::Client::Found* f = foundAt(i);
     if (f) {   // 真机也要记连接目标(原只有 mock 分支记录 → 状态页 DEV/MAC 永远 --)
@@ -140,8 +143,8 @@ static void doConnectIndex(int i) {
     }
     strcpy(connMsg, "连接中…");
     pendingConnect = true;
+    pendingConnIdx = i;            // 实际 connect 在 loop render 之后执行
     cli.stopScan();
-    if (!cli.connectIndex(i)) { pendingConnect = false; strcpy(connMsg, "连接失败"); }
     dirty = true;
 }
 static void doDisconnect() {
@@ -419,6 +422,13 @@ void loop() {
     }
 
     render();
+
+    // 延迟执行阻塞连接: 让"连接中…"先上屏(connect 阻塞期间无法重绘)
+    if (pendingConnIdx >= 0) {
+        int i = pendingConnIdx;
+        pendingConnIdx = -1;
+        if (!cli.connectIndex(i)) { pendingConnect = false; strcpy(connMsg, "连接失败"); dirty = true; }
+    }
     delay(5);
     // (无周期任务: 渲染由 dirty 驱动, BLE 事件由 handleEvents 分发)
 }

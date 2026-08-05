@@ -50,5 +50,17 @@ static void handleEvents() {
         dirty = true;
     }
     if (connSel >= connItemCount()) { connSel = 0; dirty = true; }
+
+    // 实时链路 RSSI(1s 轮询; 变化且在看第 2 页才置脏)
+    static uint32_t rssiNextMs = 0;
+    if (online && millis() >= rssiNextMs) {
+        rssiNextMs = millis() + 1000;
+        int r = cli.rssi();
+        if (r && r != linkRssi) {
+            linkRssi = r;
+            if (scr == SCR_DETAILS && detailsPage == 1) dirty = true;
+        }
+    }
+    if (!online && linkRssi) linkRssi = 0;
 }
 
