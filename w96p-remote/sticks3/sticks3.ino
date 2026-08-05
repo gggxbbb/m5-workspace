@@ -1065,6 +1065,20 @@ void loop() {
     if (snap.valid && snap.turboRemainS > 0 && scr == SCR_DASHBOARD) { scr = SCR_TURBO_DASH; dirty = true; }
     if (snap.turboRemainS == 0 && scr == SCR_TURBO_DASH) { scr = SCR_DASHBOARD; dirty = true; }
 
+    // 连接后首个快照: 风扇已在转 → 按转速就近推断当前档位(FFF1 只写无回读, 2026-08-03 反馈)
+    static bool gearSeeded = false;
+    if (!gearSeeded && snap.valid) {
+        gearSeeded = true;
+        if (gearEst == 0 && snap.speed > 0) {
+            int best = 0;
+            for (int i = 1; i < 4; i++)
+                if (abs((int)snap.speed - (int)gearSpeeds[i]) < abs((int)snap.speed - (int)gearSpeeds[best])) best = i;
+            gearEst = (uint8_t)(best + 1);
+            Serial.printf("[w96p] gear seeded from speed %d%% -> GEAR %d\n", snap.speed, gearEst);
+        }
+    }
+    if (!online) gearSeeded = false;   // 断线后重新播种
+
     // S3 信息页(第 3 页)有实时数据: 500ms 节流重绘
     if (scr == SCR_DETAILS && detailsPage == 2) {
         static uint32_t lastS3Ms = 0;
