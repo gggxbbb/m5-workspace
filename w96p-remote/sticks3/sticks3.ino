@@ -611,10 +611,26 @@ static void drawBusRow(int y) {
     txtR(SCR_W - 4, y, st, snap.power.powSta == 1 ? C_GREEN : C_WHITE, &fonts::efontCN_12);
 }
 
+// StickS3 自身电量(M5PM1, 5s 缓存; 充电中绿色带+号)
+static void drawS3Bat() {
+    static uint32_t lastMs = 0;
+    static int lvl = -1; static bool chg = false;
+    if (lastMs == 0 || millis() - lastMs > 5000) {
+        lastMs = millis();
+        lvl = M5.Power.getBatteryLevel();
+        chg = M5.Power.isCharging();
+    }
+    if (lvl < 0) snprintf(buf, sizeof(buf), "S3 --");
+    else snprintf(buf, sizeof(buf), "S3 %s%d%%", chg ? "+" : "", lvl);
+    uint16_t c = chg ? C_GREEN : lvl < 0 ? C_GREY : lvl <= 10 ? C_RED : lvl <= 30 ? C_ORANGE : C_WHITE;
+    txtR(SCR_W - 4, 4, buf, c, &fonts::efontCN_12);
+}
+
 static void renderDashboard() {
     txt(4, 2, "W96P", C_WHITE);
     bleDot(104, 10);
     txt(114, 4, "BLE", C_GREY, &fonts::efontCN_12);
+    drawS3Bat();
 
     // 大字号当前风速(青色; 自然风时进度条变绿)
     if (snap.valid) snprintf(buf, sizeof(buf), "%d%%", snap.speed);
