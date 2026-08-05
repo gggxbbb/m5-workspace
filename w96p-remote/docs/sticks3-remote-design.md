@@ -97,14 +97,15 @@ stateDiagram-v2
 
 ```
 g0    = 进入时 accel 滑动均值（设备系下的重力向量，定义体感"下"）
-L     = 设备长轴在设备系中的方向（硬件固定，真机一次性标定）
+L     = 设备长轴在设备系中的方向（StickS3 = +Y；官方 IMU 图：X+ 设备右侧、Y+ 长轴向顶、Z+ 屏幕朝外）
 down  = g0 / |g0|
-right = normalize(cross(L, down))   // 体感"右"
-fwd   = cross(down, right)          // 体感"前"
+right = normalize(cross(down, L))      // 体感"右"——指向用户右手（= 设备 X+ 侧）
+fwd   = normalize(cross(right, down))  // 体感"前"——使上举 p>0（升速）
 ```
 
 性质：设备倒置（旋转 180°）时 g0 翻转 → right 自动翻转，**方向语义跟着手走**。
 退化情形：设备完全竖直握持（L ∥ down）时 cross 无定义 → 沿用上一次的基；首次使用则屏幕提示"请稍倾斜握持"。
+**方向验证**（握姿：屏幕朝自己、USB 朝下、前倾 45°）：`down≈(0,-.7,-.7)` → `right=(1,0,0)`=+X 设备右侧 ✓；上举 Δg·fwd>0 ✓。注：`right=cross(L,down)` 是常见笔误，会得出 -X（左右颠倒）。
 
 判读规则：
 

@@ -278,8 +278,10 @@ static void enterGesture() {
             g.basisValid = false;
         }
     } else {
-        g.right = vnorm(vcross(DEVICE_LONG_AXIS, g.down));
-        g.fwd   = vcross(g.down, g.right);
+        // 体感基: right = cross(down, L) 指向用户右手(官方 IMU 图 X+ 为设备右侧)
+        //         fwd = cross(right, down) 使上举 p>0(升速)
+        g.right = vnorm(vcross(g.down, DEVICE_LONG_AXIS));
+        g.fwd   = vnorm(vcross(g.right, g.down));
         g.basisValid = true;
         lastDown = g.down; lastRight = g.right; lastFwd = g.fwd;
         hasLastBasis = true;
