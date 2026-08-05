@@ -535,6 +535,17 @@ static void enterSettings() {
     dirty = true;
 }
 
+// BtnB 双向遍历: decided 语义互斥——恰好 1 下=正向, 恰好 2 下=反向(2026-08-03 反馈)
+// 注意: 判定有序列超时(~300ms), 正向遍历也带此延迟
+static int8_t btnBNav() {
+    if (M5.BtnB.wasDecideClickCount()) {
+        uint8_t n = M5.BtnB.getClickCount();
+        if (n == 1) return 1;
+        if (n == 2) return -1;
+    }
+    return 0;
+}
+
 static void dispatchButtons() {
     switch (scr) {
     case SCR_DASHBOARD:
@@ -549,8 +560,9 @@ static void dispatchButtons() {
         if (M5.BtnB.wasClicked()) { scr = (scr == SCR_TURBO_DASH) ? SCR_DASHBOARD : SCR_MENU; dirty = true; }
         break;
     }
-    case SCR_MENU:
-        if (M5.BtnB.wasClicked()) { menuIdx = (menuIdx + 1) % 8; dirty = true; }
+    case SCR_MENU: {
+        int8_t nav = btnBNav();
+        if (nav) { menuIdx = (menuIdx + nav + 9) % 9; dirty = true; }   // 9 项(原 %8 bug: 返回不可达)
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; break; }
         if (M5.BtnA.wasClicked() || M5.BtnA.wasHold()) {
             const MenuItem& it = menu[menuIdx];
@@ -567,8 +579,10 @@ static void dispatchButtons() {
             dirty = true;
         }
         break;
-    case SCR_SETTINGS:
-        if (M5.BtnB.wasClicked()) { settingsIdx = (settingsIdx + 1) % 7; dirty = true; }
+    }
+    case SCR_SETTINGS: {
+        int8_t nav = btnBNav();
+        if (nav) { settingsIdx = (settingsIdx + nav + 7) % 7; dirty = true; }
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }
         if (M5.BtnA.wasClicked() || M5.BtnA.wasHold()) {
             const MenuItem& it = settingsMenu[settingsIdx];
@@ -584,8 +598,10 @@ static void dispatchButtons() {
             dirty = true;
         }
         break;
-    case SCR_POW:
-        if (M5.BtnB.wasClicked()) { powSel = (powSel + 1) % 3; dirty = true; }
+    }
+    case SCR_POW: {
+        int8_t nav = btnBNav();
+        if (nav) { powSel = (powSel + nav + 3) % 3; dirty = true; }
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_SETTINGS; dirty = true; }
         if (M5.BtnA.wasClicked() && snap.valid) {
             // 三开关: 当前态取自快照, 写反逻辑由 client 转换
@@ -601,8 +617,10 @@ static void dispatchButtons() {
             dirty = true;
         }
         break;
-    case SCR_CALIB:
-        if (M5.BtnB.wasClicked()) { calSel = (calSel + 1) % 6; dirty = true; }   // 4 档 + 保存 + 放弃
+    }
+    case SCR_CALIB: {
+        int8_t nav = btnBNav();
+        if (nav) { calSel = (calSel + nav + 6) % 6; dirty = true; }   // 4 档 + 保存 + 放弃
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_SETTINGS; dirty = true; }  // 放弃
         if (M5.BtnA.wasClicked()) {
             if (calSel < 4) { calBuf[calSel] = calBuf[calSel] >= 5 ? calBuf[calSel] - 5 : 0; }
@@ -620,6 +638,7 @@ static void dispatchButtons() {
         }
         if (M5.BtnA.wasHold() && calSel < 4) { calBuf[calSel] = calBuf[calSel] <= 95 ? calBuf[calSel] + 5 : 100; dirty = true; }
         break;
+    }
     case SCR_ADJUST:
         if (M5.BtnA.wasClicked()) { adjustVal = stepDown(editType, adjustVal); dirty = true; }
         if (M5.BtnA.wasHold())    { adjustVal = stepUp  (editType, adjustVal); dirty = true; }
@@ -631,8 +650,9 @@ static void dispatchButtons() {
         if (M5.BtnB.wasClicked()) { scr = SCR_MENU; dirty = true; }
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; }
         break;
-    case SCR_CONN_MGMT:
-        if (M5.BtnB.wasClicked()) { connSel = (connSel + 1) % connItemCount(); dirty = true; }
+    case SCR_CONN_MGMT: {
+        int8_t nav = btnBNav();
+        if (nav) { connSel = (connSel + nav + connItemCount()) % connItemCount(); dirty = true; }
         if (M5.BtnB.pressedFor(BTNB_LONG_MS)) { scr = SCR_DASHBOARD; dirty = true; break; }
         if (M5.BtnA.wasClicked()) {
             int devIdx;
@@ -645,6 +665,7 @@ static void dispatchButtons() {
             dirty = true;
         }
         break;
+    }
     case SCR_GESTURE:
         if (M5.BtnA.wasReleased()) exitGesture();   // 松开: 补终值回看板
         break;
@@ -825,7 +846,7 @@ static void renderMenu() {
             canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
         }
     }
-    txt(4, 204, "A:调节  B:下一项", C_GREY, &fonts::efontCN_12);
+    txt(4, 204, "A:调节  B:下一项 2xB:上一项", C_GREY, &fonts::efontCN_12);
     txt(4, 222, "B长按:回看板",     C_GREY, &fonts::efontCN_12);
 }
 
@@ -859,7 +880,7 @@ static void renderSettings() {
             canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
         }
     }
-    txt(4, 204, "A:进入/调节  B:下一项", C_GREY, &fonts::efontCN_12);
+    txt(4, 204, "A:进入/调节  B:下一项 2xB:上一项", C_GREY, &fonts::efontCN_12);
     txt(4, 222, "B长按:回主菜单",       C_GREY, &fonts::efontCN_12);
 }
 
@@ -879,7 +900,7 @@ static void renderPow() {
         canvas.setTextColor(cur ? C_BLACK : (snap.valid && vals[i]) ? C_GREEN : C_GREY, cur ? C_WHITE : C_BLACK);
         canvas.drawString(v, SCR_W - 4 - canvas.textWidth(v), y);
     }
-    txt(4, 150, "A:切换  B:下一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 150, "A:切换  B:下一行 2xB:上一行", C_GREY, &fonts::efontCN_12);
     txt(4, 168, "B长按:返回", C_GREY, &fonts::efontCN_12);
 }
 
@@ -900,7 +921,7 @@ static void renderCalib() {
             canvas.drawString(buf, SCR_W - 4 - canvas.textWidth(buf), y);
         }
     }
-    txt(4, 190, "A短:-5  A长:+5  B:下一行", C_GREY, &fonts::efontCN_12);
+    txt(4, 190, "A短:-5  A长:+5  B:下一行 2xB:上一行", C_GREY, &fonts::efontCN_12);
     txt(4, 208, "B长按:放弃", C_GREY, &fonts::efontCN_12);
 }
 
@@ -1141,7 +1162,7 @@ static void renderConnMgmt() {
     }
     if (connMsg[0]) txtC(202, connMsg, C_ORANGE, &fonts::efontCN_12);
     else if (millis() < scanUntilMs) txtC(202, "扫描中…", C_ORANGE, &fonts::efontCN_12);
-    txt(4, 222, "B:下一项  A:执行", C_GREY, &fonts::efontCN_12);
+    txt(4, 222, "B:下一项 2xB:上一项  A:执行", C_GREY, &fonts::efontCN_12);
 }
 
 static void renderConnecting() {
