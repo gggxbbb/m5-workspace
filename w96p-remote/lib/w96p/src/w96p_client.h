@@ -62,6 +62,7 @@ public:
     bool readNatureMeta(uint8_t& points, uint32_t& totalTime);
     bool readSpeedCalib(uint8_t out4[4]);   // FFF7 各档位校准转速 %，连接后读一次
     bool readFwVersion(uint8_t& marker);    // DFU 版本查询, marker = major*10+minor
+    bool readSn(uint32_t& sn);              // DFU 序列号查询(LE uint32)
 
 private:
     struct Impl;                            // PIMPL：NimBLE 类型不外泄到头文件

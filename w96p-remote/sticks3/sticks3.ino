@@ -64,8 +64,10 @@ static bool   dirty = true;              // 脏标记: 仅脏时重绘(设计 §
 
 static w96p::Client   cli;
 static w96p::Snapshot snap;              // client 500ms 轮询快照(mock 时为假数据)
-static uint8_t fwMarker = 0;             // DFU 读到的固件版本(major*10+minor)
+static uint8_t fwMarker = 0;             // DFU 读到的固件版本(major*10+minor), 连接时查
 static bool    fwValid = false;
+static uint32_t snValue = 0;             // DFU 序列号, 连接时查
+static bool    snValid = false;
 
 static bool online        = false;
 static bool manualOffline = false;       // 手动断开=true, 抑制自动重扫
@@ -473,10 +475,9 @@ static ConnKind connItemAt(int sel, int& devIdx) {
 static void enterDetails() {
     detailsPage = 0;
 #if W96P_MOCK
-    fwMarker = 17; fwValid = true;
-#else
-    fwValid = online && cli.readFwVersion(fwMarker);   // DFU 版本查询(marker=major*10+minor)
+    fwMarker = 17; fwValid = true; snValue = 12345678; snValid = true;
 #endif
+    // 真机的版本/SN 在连接时已查询(handleEvents)
     scr = SCR_DETAILS;
     dirty = true;
 }
@@ -881,6 +882,10 @@ static void renderDetails() {
         } else {
             txt(4, 122, "FW  --", C_GREY, &fonts::efontCN_12);
         }
+        if (snValid) {
+            snprintf(buf, sizeof(buf), "SN  %u", unsigned(snValue));
+            txt(4, 140, buf, C_WHITE, &fonts::efontCN_12);
+        }
     }
     txtC(210, "A:翻页  B:返回菜单", C_GREY, &fonts::efontCN_12);
 }
@@ -971,6 +976,9 @@ static void handleEvents() {
             // 连接即读档位校准转速(FFF7), 换挡后本地立即可知真实 PWM(2026-08-03 反馈)
             uint8_t cal[4];
             if (cli.readSpeedCalib(cal)) { memcpy(gearSpeeds, cal, 4); calibValid = true; }
+            // 连接即查固件版本与序列号(DFU, 2026-08-03 反馈)
+            fwValid = cli.readFwVersion(fwMarker);
+            snValid = cli.readSn(snValue);
 #endif
         } else {
             snap.valid = false;

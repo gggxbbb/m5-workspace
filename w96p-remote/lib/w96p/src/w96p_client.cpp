@@ -74,20 +74,45 @@ struct Client::Impl {
     int      qHead = 0, qCount = 0;
     uint32_t nextAttemptMs = 0;             // 队首任务下次可执行时间
 
-    // ---------- DFU（仅版本查询；FEE2 notify → 帧解析） ----------
+    // ---------- DFU（版本/SN 查询；FEE2 notify → 帧解析） ----------
     dfu::FrameParser dfuParser;
     volatile bool fwVerPending = false;
+    volatile bool snPending = false;
     uint8_t fwVerMarker = 0;
+    uint32_t snValue = 0;
 
     void onDfuNotify(const uint8_t* data, size_t len) {
         uint8_t payload[250];
         for (size_t i = 0; i < len; i++) {
             size_t n = dfuParser.feed(data[i], payload);
-            if (n >= 2 && (payload[0] & 0x7F) == dfu::DATA_VERSION) {
-                fwVerMarker = payload[1];       // marker = major*10 + minor
-                fwVerPending = true;
+            if (n >= 2) {
+                Serial.printf("[w96p] dfu rx type=%u len=%u\n", payload[0] & 0x7F, (unsigned)n);  // 临时诊断
+                if ((payload[0] & 0x7F) == dfu::DATA_VERSION) {
+                    fwVerMarker = payload[1];       // marker = major*10 + minor
+                    fwVerPending = true;
+                } else if ((payload[0] & 0x7F) == dfu::DATA_SN && n >= 5) {
+                    memcpy(&snValue, payload + 1, 4);   // little-endian uint32
+                    snPending = true;
+                }
             }
         }
+    }
+
+    // 发送控制命令并等响应（bit7=ACK）
+    bool dfuRoundtrip(uint8_t ctrl, volatile bool& flag, uint32_t timeoutMs) {
+        NimBLERemoteCharacteristic* chr = findChar(uuid::kDfuWrite);
+        if (!chr) { Serial.println("[w96p] dfu: FEE1 not found"); return false; }
+        uint8_t frame[8];
+        size_t n = dfu::buildFrame(frame, 0, &ctrl, 1);
+        flag = false;
+        if (!chr->writeValue(frame, uint16_t(n), true)) { Serial.println("[w96p] dfu: write fail"); return false; }
+        uint32_t t0 = millis();
+        while (millis() - t0 < timeoutMs) {
+            if (flag) return true;
+            delay(10);
+        }
+        Serial.printf("[w96p] dfu: ctrl 0x%02X timeout\n", ctrl);
+        return false;
     }
 
     // ---- NimBLE 回调对象（必须是成员，生命周期覆盖整个连接） ----
@@ -572,20 +597,18 @@ bool blockingRead(NimBLERemoteCharacteristic* chr, int attempts,
 
 bool Client::readFwVersion(uint8_t& marker) {
     if (!impl_ || !connected()) return false;
-    NimBLERemoteCharacteristic* chr = impl_->findChar(uuid::kDfuWrite);
-    if (!chr) { Serial.println("[w96p] dfu: FEE1 not found"); return false; }
-    uint8_t pl = dfu::CTRL_GET_VERSION | 0x80;      // bit7=需要 ACK
-    uint8_t frame[8];
-    size_t n = dfu::buildFrame(frame, 0, &pl, 1);   // key=0 调试模式
-    impl_->fwVerPending = false;
-    if (!chr->writeValue(frame, uint16_t(n), true)) return false;
-    uint32_t t0 = millis();
-    while (millis() - t0 < 800) {
-        if (impl_->fwVerPending) { marker = impl_->fwVerMarker; return true; }
-        delay(10);
-    }
-    Serial.println("[w96p] dfu: version query timeout");
-    return false;
+    uint8_t ctrl = dfu::CTRL_GET_VERSION | 0x80;
+    if (!impl_->dfuRoundtrip(ctrl, impl_->fwVerPending, 800)) return false;
+    marker = impl_->fwVerMarker;
+    return true;
+}
+
+bool Client::readSn(uint32_t& sn) {
+    if (!impl_ || !connected()) return false;
+    uint8_t ctrl = dfu::CTRL_GET_SN | 0x80;
+    if (!impl_->dfuRoundtrip(ctrl, impl_->snPending, 800)) return false;
+    sn = impl_->snValue;
+    return true;
 }
 
 bool Client::readNatureCurve(uint8_t out128[128]) {

@@ -140,12 +140,17 @@ void setup() {
     cli.setPowSwitch("POW_C_HI",  g_snap.power.cHiEnabled);
     pump(1200);
 
-    // 13. DFU 固件版本查询（替代已废弃的 FFD4 快充配置）
-    uint8_t marker;
+    // 13. DFU 固件版本与序列号查询（替代已废弃的 FFD4 快充配置）
+    uint8_t marker; uint32_t sn;
     if (cli.readFwVersion(marker)) {
         Serial.printf(">> fw version: v%u.%u (marker %u)\n", marker / 10, marker % 10, marker);
     } else {
         Serial.println("!! readFwVersion failed");
+    }
+    if (cli.readSn(sn)) {
+        Serial.printf(">> sn: %u\n", unsigned(sn));
+    } else {
+        Serial.println("!! readSn failed");
     }
 
     waitSnap(2000);

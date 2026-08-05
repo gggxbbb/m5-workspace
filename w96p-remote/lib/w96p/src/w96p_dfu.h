@@ -14,7 +14,9 @@ extern const uint8_t CRC8_TABLE[256];
 inline constexpr uint8_t CRC8_INIT = 0x89;
 inline constexpr uint8_t PACKAGE_HEAD = 0x55;
 inline constexpr uint8_t CTRL_GET_VERSION = 0x0A;
+inline constexpr uint8_t CTRL_GET_SN = 0x0F;
 inline constexpr uint8_t DATA_VERSION = 4;
+inline constexpr uint8_t DATA_SN = 10;
 
 inline uint8_t updateCrc8(uint8_t crc, uint8_t byte) { return CRC8_TABLE[(crc ^ byte) & 0xFF]; }
 
