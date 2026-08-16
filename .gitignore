@@ -21,3 +21,6 @@ dist/
 
 # WorkBuddy 工具数据(记忆/任务等，非项目内容)
 .workbuddy/
+
+# 磁盘镜像(验证脚本构建产物)
+*.img
