@@ -24,3 +24,7 @@ dist/
 
 # 磁盘镜像(验证脚本构建产物)
 *.img
+
+# Python 缓存
+__pycache__/
+*.pyc
