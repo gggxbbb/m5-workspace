@@ -21,6 +21,7 @@ Arduino 开发知识库，事实来源均为 M5Stack 官方文档，未核实项
 | 文档 | 主题 |
 |---|---|
 | [esp-now.md](esp-now.md) | StickS3 ↔ Cardputer-Adv 无线直连（已编译验证），含核心 3.x 回调签名坑 |
+| [lib-usbhid.md](lib-usbhid.md) | core 3.3.8 自带 USB HID 键盘（USBHIDKeyboard，ESP32-S3 原生 USB），含 Windows 关机快捷键示例 |
 
 ## 官方库（本地安装版本为权威）
 
