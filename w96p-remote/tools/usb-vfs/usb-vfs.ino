@@ -14,12 +14,14 @@
 
 #include <Arduino.h>
 #include <esp_event.h>
+#include <esp_random.h>
 #include <cstring>
 #include <cstdio>
 #include <cinttypes>
 
 #include "USB.h"
 #include "USBMSC.h"
+#include "tusb.h"          // tud_msc_set_sense / SCSI_SENSE_UNIT_ATTENTION
 
 #if !defined(ARDUINO_USB_MODE) || ARDUINO_USB_MODE == 1
 #error "usb-vfs requires USB-OTG (TinyUSB): compile with USBMode=default"
@@ -35,6 +37,8 @@ static constexpr uint16_t README_CLUSTER     = 11;    // README.TXT 簇
 static constexpr uint16_t STATUS_SECTOR0     = STATUS_FIRST_CLUST + 1; // 簇3=扇区4
 static constexpr uint16_t README_SECTOR      = README_CLUSTER + 1;     // 簇11=扇区12
 static constexpr uint32_t STATUS_CAPACITY    = STATUS_CLUSTERS * DISK_SECTOR_SIZE;
+static constexpr uint32_t STATUS_REFRESH_MS  = 500;   // 快照刷新周期
+static constexpr uint32_t UA_DEBOUNCE_MS     = 3000;  // Unit Attention 去抖(最小重挂间隔)
 
 static uint8_t disk[DISK_SECTOR_COUNT][DISK_SECTOR_SIZE];  // FAT12 内存盘
 static USBMSC  MSC;
@@ -80,7 +84,10 @@ static void buildBootSector() {
   b[24] = 1; b[25] = 0;                        // sectors/track (LBA-only)
   b[26] = 1; b[27] = 0;                        // heads
   b[38] = 0x29;                                // extended boot sig
-  b[39] = 0x12; b[40] = 0x34; b[41] = 0x56; b[42] = 0x78;  // volume id
+  // 卷序列号: 每次上电随机 → Windows 不会跨连接命中旧缓存(实测结论)
+  uint32_t serial = esp_random();
+  b[39] = FAT_U8(serial); b[40] = FAT_U8(serial >> 8);
+  b[41] = FAT_U8(serial >> 16); b[42] = FAT_U8(serial >> 24);
   memcpy(b + 43, "USB VFS   ", 11);            // volume label (11B)
   memcpy(b + 54, "FAT12   ", 8);               // fs type (8B)
   b[510] = 0x55; b[511] = 0xAA;
@@ -172,23 +179,45 @@ static void refreshStatusFile() {
 }
 
 // ============================== MSC 回调 ==============================
+// 回调运行在 TinyUSB 任务上下文, 严禁直接 Serial 输出(CDC 缓冲满会阻塞,
+// 阻塞 USB 任务 → 主机 BUS_RESET → 断开重连循环)。只计数, loop 限频打印。
+static volatile uint32_t mscReads    = 0;   // READ10 成功次数
+static volatile uint32_t mscReadFail = 0;   // READ10 越界被拒次数
+static volatile uint32_t mscWrites   = 0;   // WRITE10 次数
+static volatile uint32_t mscStart    = 0;   // START/STOP 次数
+
 static int32_t onRead(uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize) {
-  if (lba >= DISK_SECTOR_COUNT || offset + bufsize > DISK_SECTOR_SIZE) return 0;
-  memcpy(buffer, disk[lba] + offset, bufsize);
-  return bufsize;
+  // READ10 可能一次请求跨多扇区 (bufsize > 512): 逐扇区填充 disk 数组。
+  // 只拒绝"请求超出卷容量"的情况; 跨扇区/扇区内偏移都合法。
+  uint8_t *dst = (uint8_t *)buffer;
+  if (offset >= DISK_SECTOR_SIZE) {          // 扇区内偏移溢出 → 折算进 lba
+    lba += offset / DISK_SECTOR_SIZE;
+    offset %= DISK_SECTOR_SIZE;
+  }
+  uint32_t done = 0;
+  while (done < bufsize) {
+    if (lba >= DISK_SECTOR_COUNT) break;     // 超出卷容量: 返回已读部分
+    uint32_t n = DISK_SECTOR_SIZE - offset;
+    if (n > bufsize - done) n = bufsize - done;
+    memcpy(dst + done, disk[lba] + offset, n);
+    done += n;
+    lba++;
+    offset = 0;
+  }
+  if (done < bufsize) mscReadFail++;         // 请求超出容量, 记一次诊断计数
+  mscReads++;
+  return done;
 }
 
 static int32_t onWrite(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize) {
-  // 只读盘: SCSI 层已拒绝, 此回调不应被调用; 触发则打印(便于发现异常)
-  Serial.printf("MSC WRITE (READ-ONLY, rejected): lba=%" PRIu32 " off=%" PRIu32 " n=%" PRIu32 "\n",
-                lba, offset, bufsize);
-  (void)buffer;
-  return bufsize;   // 不落盘
+  (void)lba; (void)offset; (void)buffer;
+  mscWrites++;
+  return bufsize;   // 只读盘: 不落盘
 }
 
 static bool onStartStop(uint8_t power_condition, bool start, bool load_eject) {
-  Serial.printf("MSC start/stop: power=%u start=%d eject=%d\n",
-                power_condition, start, load_eject);
+  (void)power_condition; (void)start; (void)load_eject;
+  mscStart++;
   return true;
 }
 
@@ -202,6 +231,14 @@ static void usbEventCallback(void *arg, esp_event_base_t event_base, int32_t eve
       default: break;
     }
   }
+}
+
+// 通知主机"介质已变化" → Windows 卸载并立即重挂卷, 重新读全部内容(拿到最新 STATUS.TXT)。
+// SCSI Unit Attention: ASC 0x28 = NOT READY TO READY CHANGE (MEDIUM CHANGED)。
+// TinyUSB 在下一次 TEST UNIT READY 响应一次后自动清除, 天然防抖。
+// 解决: Windows 缓存 FAT 卷导致固件侧更新不可见 (PicoVD/wasilzafar 同款方案)。
+static void notifyMediaChange() {
+  tud_msc_set_sense(0, SCSI_SENSE_UNIT_ATTENTION, 0x28, 0x00);
 }
 
 // ============================== 主程序 ==============================
@@ -238,11 +275,35 @@ void setup() {
 }
 
 void loop() {
-  static uint32_t last = 0;
-  if (millis() - last >= 500) {
-    last = millis();
+  static uint32_t lastRefresh = 0, lastLog = 0, lastUaMs = 0;
+  static char     lastStatus[STATUS_BUF_SIZE] = {0};
+  static uint32_t lastReads = 0, lastFails = 0, lastStarts = 0, lastWrites = 0, lastUas = 0;
+  static uint32_t uaCount = 0;
+
+  uint32_t now = millis();
+  if (now - lastRefresh >= STATUS_REFRESH_MS) {
+    lastRefresh = now;
     buildStatusText();
-    refreshStatusFile();
-    Serial.printf("[vfs] STATUS.TXT refreshed (%u bytes)\n", (unsigned)strlen(statusBuf));
+    if (strcmp(statusBuf, lastStatus) != 0) {       // 内容实质变化才落盘
+      refreshStatusFile();
+      memcpy(lastStatus, statusBuf, sizeof(lastStatus));
+      if (now - lastUaMs >= UA_DEBOUNCE_MS) {       // 去抖: 最少 3s 一次重挂
+        lastUaMs = now;
+        notifyMediaChange();
+        uaCount++;
+      }
+    }
+  }
+  if (now - lastLog >= 1000) {
+    lastLog = now;
+    // 限频打印 SCSI 活动摘要; ua=+N 表示本次窗口发了 N 次介质变化通知
+    Serial.printf("[vfs] status=%uB reads=+%u fails=+%u starts=+%u writes=+%u ua=+%u\n",
+                  (unsigned)strlen(statusBuf),
+                  (unsigned)(mscReads - lastReads), (unsigned)(mscReadFail - lastFails),
+                  (unsigned)(mscStart - lastStarts), (unsigned)(mscWrites - lastWrites),
+                  (unsigned)(uaCount - lastUas));
+    lastReads = mscReads; lastFails = mscReadFail;
+    lastStarts = mscStart; lastWrites = mscWrites;
+    lastUas = uaCount;
   }
 }

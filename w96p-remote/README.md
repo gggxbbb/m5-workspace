@@ -11,7 +11,8 @@ w96p-remote/
 ├── sticks3/sticks3.ino    ← StickS3 遥控器主程序（双键 + IMU 手势 + 彩屏 UI，8 界面状态机）
 ├── cardputer/             ← Cardputer-Adv 分支（占位，待实施）
 ├── tools/imu-calib/       ← IMU 轴向校准工具（串口 CSV + 屏幕十字点 + MARK 键）
-├── tools/usb-vfs/         ← USB 虚拟文件系统实验（TinyUSB MSC 只读 U 盘 + 动态 STATUS.TXT）
+├── tools/usb-vfs/         ← USB 虚拟文件系统实验（TinyUSB MSC 只读 U 盘 + 动态 STATUS.TXT；有 Windows 缓存限制，方向让位 usb-hid）
+├── tools/usb-hid/         ← USB HID 双向通道（USBHIDVendor：状态推送 + 命令控制；VFS 替代方案，推荐）
 └── docs/                  ← 设计文档（sticks3-remote-design.md，冻结状态）
 ```
 
@@ -22,7 +23,8 @@ w96p-remote/
 | 协议层 / client 库 | ✅ 完成，双 FQBN 编译验证；未上真机 |
 | demo | ✅ 编译通过，待真机跑（串口 115200） |
 | sticks3 遥控器 | ✅ 编译通过（含 MOCK 模式），待真机联调：IMU 轴向/阈值、中文缺字、连接时序 |
-| tools/usb-vfs | ✅ 编译通过 + 镜像布局交叉验证 PASS，待真机验收（见 docs/usb-vfs-design.md §8） |
+| tools/usb-vfs | ✅ 真机验证：E: 盘稳定挂载、断开重连已修复（onRead 跨扇区）、UA 介质变化通知待测；Windows 缓存限制见 spec |
+| tools/usb-hid | ✅ 编译通过 + 主机工具就绪，待真机验证双向通道 |
 | cardputer 分支 | 🔲 未开工 |
 
 ## 编译
