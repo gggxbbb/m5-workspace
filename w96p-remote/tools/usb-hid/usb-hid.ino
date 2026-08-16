@@ -67,40 +67,59 @@ static void handleCommand(char *line) {
   else    Vendor.println("ERR unknown");
 }
 
+// ============================== 主机命令接收 ==============================
+// arduino-esp32 的 tud_hid_set_report_cb 把"带 report id 的 OUTPUT report"
+// 路由到 feature 分支 (_onSetFeature, 数据进 feature 数组不进 rx_queue)——
+// USBHIDVendor 的 available()/read() 永远读不到。因此主机命令走 FEATURE
+// report 通道, 固件订阅 SET_FEATURE 事件取数据。 (core USBHID.cpp:263)
+static char featureCmd[64];
+static volatile bool featurePending = false;
+
+static void vendorEventCallback(void *arg, esp_event_base_t event_base,
+                                int32_t event_id, void *event_data) {
+  if (event_base != ARDUINO_USB_HID_VENDOR_EVENTS) return;
+  if (event_id == ARDUINO_USB_HID_VENDOR_SET_FEATURE_EVENT) {
+    arduino_usb_hid_vendor_event_data_t *data =
+        (arduino_usb_hid_vendor_event_data_t *)event_data;
+    size_t n = data->len;
+    if (n > sizeof(featureCmd) - 1) n = sizeof(featureCmd) - 1;
+    memcpy(featureCmd, data->buffer, n);
+    featureCmd[n] = '\0';
+    featurePending = true;
+  }
+}
+
+// 事件回调里只拷数据, loop 里处理(避免事件 task 上下文做 Stream I/O)
+static void processPendingFeatureCmd() {
+  if (!featurePending) return;
+  featurePending = false;
+  char *nl = strpbrk(featureCmd, "\r\n");     // 截断 0x00 填充/尾部
+  if (nl) *nl = '\0';
+  if (!featureCmd[0]) return;
+  Serial.printf("[hid] RX(feat): %s\n", featureCmd);
+  handleCommand(featureCmd);
+}
+
 // ============================== 主程序 ==============================
 void setup() {
   Serial.begin(115200);
   delay(200);
 
+  Vendor.onEvent(vendorEventCallback);   // 命令经 FEATURE report 进入
   Vendor.begin();
   USB.begin();
 
-  Serial.println("[hid] USB HID ready - vendor channel (usage page 0xFF00)");
+  Serial.println("[hid] USB HID ready - vendor channel (usage page 0xFF00, cmd via feature report)");
 }
 
 void loop() {
+  processPendingFeatureCmd();            // 处理主机命令 (FEATURE report)
+
   static uint32_t last = 0;
   if (millis() - last >= 500) {
     last = millis();
     buildStateText();
     Vendor.print(stateBuf);                       // IN report: 推状态
     Serial.printf("[hid] TX: %s", stateBuf);
-  }
-
-  // OUT report: 收命令(按行解析)
-  static char line[64];
-  static uint8_t li = 0;
-  while (Vendor.available()) {
-    char c = Vendor.read();
-    if (c == '\n') {
-      line[li] = '\0';
-      if (li > 0) {
-        Serial.printf("[hid] RX: %s\n", line);
-        handleCommand(line);
-      }
-      li = 0;
-    } else if (li < sizeof(line) - 1) {
-      line[li++] = c;
-    }
   }
 }

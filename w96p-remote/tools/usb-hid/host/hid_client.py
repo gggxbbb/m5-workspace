@@ -45,17 +45,22 @@ def pick_device(devs):
     return devs[0]
 
 
+HID_REPORT_ID_VENDOR = 0x06   # USBHIDVendor 的 IN/OUT/FEATURE 共用 report id 6
+
+
 def send_line(dev, text):
-    # HID write 首字节 = report id; USBHIDVendor 用 report id 0
-    dev.write(b"\x00" + text.encode("utf-8") + b"\r\n")
+    # 命令走 FEATURE report (report id 6):
+    # arduino-esp32 把带 report id 的 OUTPUT 路由到 feature 分支, write() 发的
+    # OUT report 固件收不到 (USBHIDVendor 的 _onOutput 不被调用)。见 usb-hid.ino。
+    dev.send_feature_report(bytes([HID_REPORT_ID_VENDOR]) + text.encode("utf-8") + b"\r\n")
 
 
 def read_loop(dev, stop):
     while not stop.is_set():
-        data = dev.read(64, timeout_ms=200)
+        data = dev.read(64, timeout_ms=200)   # cffi hid: 返回 int 列表, 空列表=超时
         if not data:
             continue
-        payload = data[1:] if data[0] == 0 else data   # 去 report id
+        payload = bytes(data[1:])   # 首字节恒为 report id (USBHIDVendor = 0x06), 去掉
         try:
             sys.stdout.write(payload.decode("utf-8", "replace"))
             sys.stdout.flush()
@@ -101,7 +106,8 @@ def main():
 
     info = pick_device(devs)
     import hid
-    dev = hid.Device(info["vendor_id"], info["product_id"])
+    dev = hid.device()
+    dev.open(info["vendor_id"], info["product_id"])
 
     if args.cmd:
         send_line(dev, args.cmd)
