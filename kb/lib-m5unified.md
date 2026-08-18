@@ -1,6 +1,6 @@
 # M5Unified 库 KB（本地版本 0.2.19）
 
-> **来源权威**：本文所有 API 与行为均核实自本机安装源码 `C:\Users\gameg\Documents\Arduino\libraries\M5Unified`（版本号见 `src/gitTagVersion.h`：0.2.19）。引用格式 `文件:行号` 均指该目录下路径。
+> **来源权威**：本文所有 API 与行为均核实自本机安装源码 `<libraries>\M5Unified`（版本号见 `src/gitTagVersion.h`：0.2.19）。引用格式 `文件:行号` 均指该目录下路径。
 >
 > 适用目标设备：**M5StickS3**（FQBN `m5stack:esp32:m5stack_sticks3`）与 **Cardputer-Adv**（FQBN `m5stack:esp32:m5stack_cardputer`，无 Adv 专属板型）。设备级细节见 `kb/m5stick-s3.md`、`kb/cardputer-adv.md`。
 

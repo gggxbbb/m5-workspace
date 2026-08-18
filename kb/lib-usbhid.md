@@ -1,6 +1,6 @@
 # USB HID 键盘 KB（Arduino-ESP32 core 自带）
 
-> **来源权威**：核实自本机 m5stack:esp32 core 3.3.8 源码 `C:\Users\gameg\AppData\Local\Arduino15\packages\m5stack\hardware\esp32\3.3.8\libraries\USB\src\`。
+> **来源权威**：核实自本机 m5stack:esp32 core 3.3.8 源码 `<arduino-data>\packages\m5stack\hardware\esp32\3.3.8\libraries\USB\src\`。
 >
 > 适用：ESP32-S3 系列（**StickS3 / Cardputer / Cardputer-Adv** 原生 USB 口），core 3.x（3.3.8 验证）。M5Unified **不含** HID 支持，USB HID 键盘走 Arduino core 自带的 `USBHIDKeyboard`。
 

@@ -51,7 +51,7 @@ Partition default differs per board: StickS3 → `default_8MB` (3.2MB app), Card
 
 Download mode: **StickS3** = hold side reset ~2s until green LED blinks. **Cardputer-Adv** = power switch OFF, hold G0, plug USB-C, release.
 
-Locally installed libraries (API KBs match these exact versions): M5Unified 0.2.19, M5GFX 0.2.26, M5PM1 1.0.7, M5Cardputer 1.1.1, at `C:\Users\gameg\Documents\Arduino\libraries\` — read source there when KB is ambiguous.
+Locally installed libraries (API KBs match these exact versions): M5Unified 0.2.19, M5GFX 0.2.26, M5PM1 1.0.7, M5Cardputer 1.1.1, at the local Arduino libraries folder (`<libraries>/`) — read source there when KB is ambiguous.
 
 ## Repo Conventions
 

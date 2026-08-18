@@ -1,6 +1,6 @@
 # M5PM1 — M5Stack 自研 PM1 电源管理芯片驱动库
 
-> **核实版本**: `1.0.7`（library.properties），本地路径 `C:\Users\gameg\Documents\Arduino\libraries\M5PM1`
+> **核实版本**: `1.0.7`（library.properties），本地路径 `<libraries>\M5PM1`
 > **芯片**: M5Stack 自研 PM1，多功能电源管理 IC
 > **I2C 地址**: `0x6E`（默认，宏 `M5PM1_DEFAULT_ADDR`）
 > **I2C 速度**: 默认 100kHz，支持切换至 400kHz

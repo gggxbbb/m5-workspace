@@ -1,6 +1,6 @@
 # M5Cardputer 库（v1.1.1）
 
-> **核实版本**: 1.1.1，源头 `C:\Users\gameg\Documents\Arduino\libraries\M5Cardputer`，逐文件比对源码。
+> **核实版本**: 1.1.1，源头 `<libraries>\M5Cardputer`，逐文件比对源码。
 
 ## 1. 定位与适用设备
 

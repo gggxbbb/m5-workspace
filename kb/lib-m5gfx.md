@@ -1,6 +1,6 @@
 # M5GFX — M5Stack 统一显示驱动库
 
-> **本地版本**: 0.2.26（核实来源：`C:\Users\gameg\Documents\Arduino\libraries\M5GFX`）
+> **本地版本**: 0.2.26（核实来源：`<libraries>\M5GFX`）
 > 本地 M5GFX.cpp 共 3484 行，涵盖 ESP32/ESP32-S3/ESP32-P4/SDL 多平台自动识别。
 
 ---
@@ -593,4 +593,4 @@ void loop() { M5.update(); }
 - **StickS3 KB**：`kb/m5stick-s3.md`
 - **Cardputer-Adv KB**：`kb/cardputer-adv.md`
 
-> 文件生成时间：2026-08-03 | 核实工具：source read / grep | 本地库路径：`C:\Users\gameg\Documents\Arduino\libraries\M5GFX`
+> 文件生成时间：2026-08-03 | 核实工具：source read / grep | 本地库路径：`<libraries>\M5GFX`
