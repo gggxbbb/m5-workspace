@@ -473,6 +473,20 @@ sprite.createSprite(100, 100);
 
 autodetect 最多重试 4 次，每次都会尝试 I2C/SPI 通信。如果设备没有连接面板（如裸 ATOM Lite），最后会返回 `board_unknown` 且 `init_impl` 返回 `true`（无面板时不算失败）。此时 `getBoard()` 为 `board_unknown`，后续绘制操作会空操作。
 
+### 5.10 ❌ `using namespace lgfx` 与 Arduino `millis()` 冲突
+
+`lgfx::v1` 内有自己的 `millis()`（`platforms/esp32/common.hpp:118`）。在 sketch 里写 `using namespace lgfx;` 后调用裸 `millis()` 会编译失败：
+
+```
+error: call of overloaded 'millis()' is ambiguous
+note: candidate: 'long unsigned int millis()'          // esp32-hal.h
+note: candidate: 'long unsigned int lgfx::v1::millis()' // common.hpp
+```
+
+**原因**：`using namespace lgfx` 把 `lgfx::v1::millis` 引入全局，与 Arduino 全局 `millis` 重载冲突（2026-08-18 在 liangzi-meter 实测）。
+
+**正确做法**：不需要 `using namespace lgfx` —— `fonts::efontCN_16`（`lgfx_fonts.hpp:574-577` 有全局别名 `namespace fonts`）与 `middle_center`/`middle_left` 等 datum 常量（`misc/enum.hpp:495` 全局 `using namespace lgfx::textdatum;`）**都已在全局作用域可直接使用**。同理 `TFT_*` 颜色也已被 `using namespace m5gfx::ili9341_colors;` 全局导出。需要 lgfx 内部符号时用显式限定（如 `lgfx::v1::...`），不要整体 `using namespace lgfx`。
+
 ---
 
 ## 6. 版本兼容

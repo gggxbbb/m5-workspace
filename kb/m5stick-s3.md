@@ -178,6 +178,8 @@ lib_deps =
 7. **勿拆外壳**:可能损坏天线 PFC 电路。
 8. 与旧 StickC 系列(AXP192 PMU、无 PSRAM、ESP32-PICO)软硬件均不通用;库认准 M5Unified,不要用 M5StickC / M5StickCPlus2 库。
 9. ESP32-S3 原生 USB:上传固件若卡在枚举,确认 `ARDUINO_USB_CDC_ON_BOOT` 设置或按复位键进下载模式。
+10. **原生 USB CDC 默认启用**:板型默认 `USBMode=hwcdc`(Hardware CDC and JTAG)+ `CDCOnBoot=cdc`,`Serial` 直接映射原生 USB——上位机看到的 COM 口就是它,做串口通信**无需任何板型配置**(2026-08-18 `arduino-cli board details` 实测)。注意区分 `UploadMode=default`(UART0/Hardware CDC)与 `UploadMode=cdc`(USB-OTG TinyUSB)。
+11. **烧录后 "Hard resetting via RTS pin" 提示不可靠**:USB 下载模式下 arduino-cli 的自动硬复位经常无效,设备不会真正重启进固件(还停在 ROM 下载模式)。**必须手动按侧面复位键**让设备从 flash 启动;Windows 上 USB 可能重新枚举,COM 口会短暂消失/变化,等枚举完成再连接(2026-08-18 liangzi-meter 实测)。
 
 来源:以上 1–7 均出自[官方文档 Note 章节](https://docs.m5stack.com/en/core/StickS3);8、9 为 [INFERENCE] 开发经验补充。
 

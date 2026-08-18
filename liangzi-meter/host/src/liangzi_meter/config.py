@@ -1,0 +1,83 @@
+"""liangzi-meter 上位机：配置存储。"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.json"
+
+DEFAULT_NTP = "ntp.aliyun.com"
+# 官方默认峰谷（北京时间，2026-08-17 生效）：高峰 9:00-12:00 / 14:00-18:00
+DEFAULT_PEAK_RANGES: list[tuple[str, str]] = [("09:00", "12:00"), ("14:00", "18:00")]
+# 余额告警阈值（元）：余额低于该值，设备与上位机显示红色
+DEFAULT_BALANCE_WARN = 10.0
+
+
+@dataclass
+class Config:
+    wifi_ssid: str = ""
+    wifi_password: str = ""
+    ntp: str = DEFAULT_NTP
+    api_key: str = ""
+    peak_override: bool = False
+    peak_ranges: list[tuple[str, str]] = field(
+        default_factory=lambda: list(DEFAULT_PEAK_RANGES)
+    )
+    balance_warn: float = DEFAULT_BALANCE_WARN
+
+    def to_message(self) -> dict:
+        """转换为串口 config 消息（不含 type，由发送方补全）。"""
+        msg: dict = {
+            "wifi": {"ssid": self.wifi_ssid, "password": self.wifi_password},
+            "ntp": self.ntp,
+            "api_key": self.api_key,
+            "balance_warn": self.balance_warn,
+        }
+        if self.peak_override:
+            msg["peak_ranges"] = [
+                {"start": s, "end": e}
+                for s, e in self.peak_ranges
+                if s and e
+            ]
+        return msg
+
+
+def load_config() -> Config:
+    if not CONFIG_PATH.exists():
+        return Config()
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        cfg = Config()
+        cfg.wifi_ssid = str(data.get("wifi_ssid", ""))
+        cfg.wifi_password = str(data.get("wifi_password", ""))
+        cfg.ntp = str(data.get("ntp", DEFAULT_NTP)) or DEFAULT_NTP
+        cfg.api_key = str(data.get("api_key", ""))
+        cfg.peak_override = bool(data.get("peak_override", False))
+        ranges = data.get("peak_ranges") or []
+        cfg.peak_ranges = [
+            (str(s), str(e)) for s, e in ranges[:4]
+        ] or list(DEFAULT_PEAK_RANGES)
+        try:
+            cfg.balance_warn = float(data.get("balance_warn", DEFAULT_BALANCE_WARN))
+        except (TypeError, ValueError):
+            cfg.balance_warn = DEFAULT_BALANCE_WARN
+        return cfg
+    except (OSError, ValueError, TypeError):
+        return Config()
+
+
+def save_config(cfg: Config) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "wifi_ssid": cfg.wifi_ssid,
+        "wifi_password": cfg.wifi_password,
+        "ntp": cfg.ntp,
+        "api_key": cfg.api_key,
+        "peak_override": cfg.peak_override,
+        "peak_ranges": [list(r) for r in cfg.peak_ranges],
+        "balance_warn": cfg.balance_warn,
+    }
+    CONFIG_PATH.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
