@@ -16,6 +16,9 @@ build/
 Thumbs.db
 Desktop.ini
 
+# 本机专属 IDE 配置（含绝对路径，公开前移除）
+.vscode/c_cpp_properties.json
+
 # 分发产物(分享包)
 dist/
 
