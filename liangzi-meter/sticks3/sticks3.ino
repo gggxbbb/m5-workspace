@@ -14,8 +14,9 @@
 #include "config.h"
 #include "certs.h"
 #include "peak_font.h"
+#include "alert.h"
 
-#define FW_VERSION "1.0.0"
+#define FW_VERSION "1.1.0"
 #define MODEL_NAME "StickS3"
 
 #define BALANCE_HOST "api.deepseek.com"
@@ -88,6 +89,15 @@ unsigned long lastNtpAttempt = 0;
 unsigned long lastStateSend = 0;
 unsigned long lastDisplayTick = 0;
 
+// ---------- 提示音功能（ADR-0004）----------
+// 开启后：进入高峰播敌跟踪音一次；高峰期间余额查询 15s 一次；
+// 某次查询余额比上次减少 > 0.01 元则进入持续敌导弹音，直到某次判定不再减少。
+#define PEAK_QUERY_INTERVAL_MS 15000UL   // 高峰期间余额查询间隔
+#define BALANCE_DECREASE_EPS 0.01        // 判定「余额减少」的阈值（元）
+int8_t   prevPeak = -1;                  // 上次峰谷（-1=未同步/未知，1=峰 2=谷）
+double   lastBalance = -1.0;             // 上次成功查询的余额（对比基准）
+bool     mslAlertActive = false;         // 持续敌导弹告警进行中
+
 char serialBuf[SERIAL_BUF];
 size_t serialLen = 0;
 
@@ -141,6 +151,7 @@ void sendState() {
   doc["ip"] = WiFi.localIP().toString();
   doc["battery"] = M5.Power.getBatteryLevel();
   doc["fw"] = FW_VERSION;
+  doc["alert_enabled"] = cfg.alertEnabled;
   sendJson(doc);
 }
 
@@ -178,6 +189,11 @@ void applyConfig() {
   balanceValid = false;
   balanceExpired = false;
   fullRedraw = true;
+  // 开关被关闭时立即静音并退出持续告警
+  if (!cfg.alertEnabled && mslAlertActive) {
+    mslAlertActive = false;
+    stopAlert();
+  }
 }
 
 void handleConfig(JsonDocument &doc) {
@@ -189,6 +205,7 @@ void handleConfig(JsonDocument &doc) {
   cfg.ntp = doc["ntp"] | DEFAULT_NTP;
   cfg.apiKey = doc["api_key"] | "";
   cfg.balanceWarn = doc["balance_warn"] | DEFAULT_BALANCE_WARN;
+  cfg.alertEnabled = doc["alert_enabled"] | false;
 
   JsonArray ranges = doc["peak_ranges"];
   if (ranges.isNull()) {
@@ -265,12 +282,40 @@ void manageNtp() {
   }
 }
 
+// 是否处于「高峰监控」窗口：提示音功能开启 + 时间已同步 + 当前在高峰时段内
+bool inPeakWatch() {
+  if (!cfg.alertEnabled) return false;
+  time_t now = time(nullptr);
+  if (now <= 1600000000L) return false;
+  struct tm tmv;
+  localtime_r(&now, &tmv);
+  return inPeakWindow(cfg, tmv.tm_hour * 60 + tmv.tm_min);
+}
+
 // 完成一次查询（成功或失败），更新全局余额状态，清理连接，回 IDLE
+// 成功时顺带跑「余额减少 → 持续敌导弹」状态机（ADR-0004）
 static void finishBalance(bool ok) {
   if (ok) {
     balance = bsResultBalance;
     balanceValid = true;
     balanceExpired = false;
+    // 先判定再更新基准：prev 为上次成功查询值
+    double prev = lastBalance;
+    lastBalance = balance;
+    if (inPeakWatch()) {
+      if (prev >= 0) {
+        if (!mslAlertActive && balance < prev - BALANCE_DECREASE_EPS) {
+          mslAlertActive = true;      // 余额减少 → 进入持续敌导弹音
+          playAlert(AL_MSL);
+        } else if (mslAlertActive && balance >= prev) {
+          mslAlertActive = false;     // 判定不再减少 → 停止
+          stopAlert();
+        }
+      }
+    } else if (mslAlertActive) {
+      mslAlertActive = false;
+      stopAlert();
+    }
   } else {
     balanceExpired = balanceValid;  // 保留旧值并标记过期
   }
@@ -305,11 +350,13 @@ static bool parseBalanceResponse() {
 }
 
 void manageBalance() {
-  // IDLE：检查是否该发起查询
+  // IDLE：检查是否该发起查询（高峰监控期间 15s，否则默认 5min）
   if (bsState == BS_IDLE) {
     bool due = cfg.apiKey.length() > 0 &&
                WiFi.status() == WL_CONNECTED &&
-               (balanceForce || millis() - lastBalanceFetch > BALANCE_INTERVAL_MS);
+               (balanceForce ||
+                millis() - lastBalanceFetch >
+                    (inPeakWatch() ? PEAK_QUERY_INTERVAL_MS : BALANCE_INTERVAL_MS));
     if (!due) return;
     bsResp = "";
     bsResultAvailable = true;
@@ -572,6 +619,32 @@ void handleKeys() {
   }
 }
 
+// ---------- 提示音事件 ----------
+
+// 高峰边沿 → 敌跟踪音一次；离开高峰/关闭开关 → 停止持续敌导弹音
+void manageAlert() {
+  time_t now = time(nullptr);
+  bool synced = now > 1600000000L;
+  int img = 0;  // 0=未同步 1=峰 2=谷
+  if (synced) {
+    struct tm tmv;
+    localtime_r(&now, &tmv);
+    img = inPeakWindow(cfg, tmv.tm_hour * 60 + tmv.tm_min) ? 1 : 2;
+  }
+
+  if (cfg.alertEnabled) {
+    // 非高峰 → 高峰 翻转时播敌跟踪音（上电首帧 prevPeak=-1 不触发）
+    if (img == 1 && prevPeak == 2) playAlert(AL_LOCK);
+  }
+  if (img != 0) prevPeak = img;
+
+  // 离开高峰（或未同步、或开关关闭）→ 停止持续告警
+  if (mslAlertActive && (!cfg.alertEnabled || img != 1)) {
+    mslAlertActive = false;
+    stopAlert();
+  }
+}
+
 // ---------- 主流程 ----------
 
 void setup() {
@@ -579,6 +652,7 @@ void setup() {
   M5.begin(m5cfg);
   M5.Display.setRotation(0);  // 竖屏 135x240
   M5.Display.setBrightness(160);
+  M5.Speaker.setVolume(96);   // 提示音音量（电池供电安全音量）
 
   // 创建双缓冲帧缓冲（StickS3 有 8MB OPI PSRAM，优先用 PSRAM 存放 135×240×2=64.8KB）
   canvas.setPsram(true);
@@ -628,6 +702,8 @@ void loop() {
   manageWiFi();
   manageNtp();
   manageBalance();
+  manageAlert();     // 提示音事件（高峰边沿/停止条件）
+  alertTick();       // 告警音播放状态机（非阻塞）
   if (millis() - lastStateSend > STATE_INTERVAL_MS) {
     lastStateSend = millis();
     sendState();

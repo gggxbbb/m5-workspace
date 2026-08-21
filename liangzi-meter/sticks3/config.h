@@ -32,6 +32,7 @@ struct Config {
   float balanceWarn = DEFAULT_BALANCE_WARN;
   PeakRange peak[MAX_PEAK_RANGES];
   int peakCount = 0;  // 0 = 使用官方默认
+  bool alertEnabled = false;  // 提示音功能总开关（默认关，见 ADR-0004）
 
   bool hasWifi() const { return ssid.length() > 0; }
 };
@@ -91,6 +92,7 @@ inline void cfgLoad(Config &c, Preferences &prefs) {
   c.ntp = prefs.getString("ntp", DEFAULT_NTP);
   c.apiKey = prefs.getString("apikey", "");
   c.balanceWarn = prefs.getFloat("bwarn", DEFAULT_BALANCE_WARN);
+  c.alertEnabled = prefs.getBool("alert", false);
   String ranges = prefs.getString("ranges", "");
   c.peakCount = 0;
   if (ranges.length() > 0) {
@@ -118,6 +120,7 @@ inline void cfgSave(const Config &c, Preferences &prefs) {
   prefs.putString("ntp", c.ntp);
   prefs.putString("apikey", c.apiKey);
   prefs.putFloat("bwarn", c.balanceWarn);
+  prefs.putBool("alert", c.alertEnabled);
   if (c.peakCount > 0) {
     String ranges;
     for (int i = 0; i < c.peakCount; i++) {

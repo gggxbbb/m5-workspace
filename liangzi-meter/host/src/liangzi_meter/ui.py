@@ -95,6 +95,11 @@ class MainWindow(QMainWindow):
         form.addRow("API Key", key_row)
         form.addRow("余额告警阈值", self.warn_spin)
 
+        self.alert_check = QCheckBox(
+            "提示音功能（进入高峰提示 + 高峰余额减少持续告警，默认关）"
+        )
+        form.addRow("", self.alert_check)
+
         self.peak_check = QCheckBox("覆盖官方峰谷时段（官方默认 09:00-12:00 / 14:00-18:00）")
         form.addRow("", self.peak_check)
         peak_grid = QVBoxLayout()
@@ -209,6 +214,7 @@ class MainWindow(QMainWindow):
         self.ntp_edit.setText(cfg.ntp or DEFAULT_NTP)
         self.key_edit.setText(cfg.api_key)
         self.warn_spin.setValue(cfg.balance_warn)
+        self.alert_check.setChecked(cfg.alert_enabled)
         self.peak_check.setChecked(cfg.peak_override)
         ranges = list(cfg.peak_ranges or [])
         defaults = [("09:00", "12:00"), ("14:00", "18:00")]
@@ -232,6 +238,7 @@ class MainWindow(QMainWindow):
         cfg.ntp = self.ntp_edit.text().strip() or DEFAULT_NTP
         cfg.api_key = self.key_edit.text().strip()
         cfg.balance_warn = self.warn_spin.value()
+        cfg.alert_enabled = self.alert_check.isChecked()
         cfg.peak_override = self.peak_check.isChecked()
         ranges = []
         for i in range(2):
