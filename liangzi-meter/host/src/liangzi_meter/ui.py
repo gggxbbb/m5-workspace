@@ -100,6 +100,19 @@ class MainWindow(QMainWindow):
         )
         form.addRow("", self.alert_check)
 
+        # 屏幕方向：0=竖屏正常 1=顺时针90°(横屏) 2=180° 3=逆时针90°(横屏)
+        self.rot_combo = QComboBox()
+        for deg, val in (
+            ("0°（竖屏）", 0),
+            ("90°（横屏，顺时针）", 1),
+            ("180°（倒置）", 2),
+            ("270°（横屏，逆时针）", 3),
+        ):
+            self.rot_combo.addItem(deg, val)
+        self.autorot_check = QCheckBox("重力感应旋屏（随姿态自动旋转，默认关）")
+        form.addRow("屏幕方向", self.rot_combo)
+        form.addRow("", self.autorot_check)
+
         self.peak_check = QCheckBox("覆盖官方峰谷时段（官方默认 09:00-12:00 / 14:00-18:00）")
         form.addRow("", self.peak_check)
         peak_grid = QVBoxLayout()
@@ -139,11 +152,13 @@ class MainWindow(QMainWindow):
         self.st_battery = QLabel("-")
         self.st_wifi = QLabel("-")
         self.st_fw = QLabel("-")
+        self.st_rotation = QLabel("-")
         dev_form.addRow("时间", self.st_time)
         dev_form.addRow("峰谷", self.st_phase)
         dev_form.addRow("余额", self.st_balance)
         dev_form.addRow("电量", self.st_battery)
         dev_form.addRow("WiFi", self.st_wifi)
+        dev_form.addRow("方向", self.st_rotation)
         dev_form.addRow("固件", self.st_fw)
         root.addWidget(dev_box)
 
@@ -215,6 +230,9 @@ class MainWindow(QMainWindow):
         self.key_edit.setText(cfg.api_key)
         self.warn_spin.setValue(cfg.balance_warn)
         self.alert_check.setChecked(cfg.alert_enabled)
+        idx = self.rot_combo.findData(cfg.screen_rotation)
+        self.rot_combo.setCurrentIndex(max(0, idx))
+        self.autorot_check.setChecked(cfg.auto_rotate)
         self.peak_check.setChecked(cfg.peak_override)
         ranges = list(cfg.peak_ranges or [])
         defaults = [("09:00", "12:00"), ("14:00", "18:00")]
@@ -239,6 +257,8 @@ class MainWindow(QMainWindow):
         cfg.api_key = self.key_edit.text().strip()
         cfg.balance_warn = self.warn_spin.value()
         cfg.alert_enabled = self.alert_check.isChecked()
+        cfg.screen_rotation = self.rot_combo.currentData() or 0
+        cfg.auto_rotate = self.autorot_check.isChecked()
         cfg.peak_override = self.peak_check.isChecked()
         ranges = []
         for i in range(2):
@@ -302,6 +322,12 @@ class MainWindow(QMainWindow):
 
         batt = msg.get("battery")
         self.st_battery.setText(f"{batt}%" if isinstance(batt, int) and batt >= 0 else "-")
+        rot = msg.get("rotation")
+        if isinstance(rot, int):
+            mode = "自动" if msg.get("auto_rotate") else "固定"
+            self.st_rotation.setText(f"{rot * 90}° · {mode}")
+        else:
+            self.st_rotation.setText("-")
         wifi = msg.get("wifi")
         ssid = msg.get("ssid", "")
         self.st_wifi.setText(

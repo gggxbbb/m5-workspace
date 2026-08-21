@@ -15,12 +15,14 @@
 |---|---|---|
 | 上位机 → 固件 | `ping` | 探测设备在线 |
 | 固件 → 上位机 | `hello` | 握手：型号、固件版本、是否已配置 |
-| 上位机 → 固件 | `config` | 全量配置快照（WiFi/NTP/API key/峰谷覆盖），整体覆盖 NVS |
+| 上位机 → 固件 | `config` | 全量配置快照（WiFi/NTP/API key/峰谷覆盖/提示音/屏幕方向/旋屏开关），整体覆盖 NVS |
 | 固件 → 上位机 | `ack` | 对 `config` 的确认（成功/失败 + 原因） |
 | 上位机 → 固件 | `get_state` | 请求当前状态快照 |
 | 固件 → 上位机 | `state` | 状态上报：时间/峰谷/余额/电量/WiFi 状态 |
 
 - 配置为**全量覆盖**语义：每次 `config` 携带全部字段，未携带字段视为清空（或保持默认）。
+- `config` 消息字段（2026-08-21 增补）：`wifi{ssid,password}` / `ntp` / `api_key` / `balance_warn` / `peak_ranges[]` / `alert_enabled` / `screen_rotation`（0..3，见 ADR-0005）/ `auto_rotate`（bool，见 ADR-0005）。
+- `state` 消息字段（2026-08-21 增补）：`rotation`（当前屏幕方向）、`auto_rotate`（旋屏开关回显）。
 - API key 以明文 JSON 传输——链路为本地 USB，攻击面可接受（与 ADR-0001 一致）。
 - 未知 `type` 的合法 JSON：固件忽略；非法行：固件丢弃并计入日志计数。保证协议演进向前兼容。
 

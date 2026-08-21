@@ -26,6 +26,14 @@
 #define STATE_INTERVAL_MS (60UL * 1000UL)          // 状态上报周期 60 秒
 #define SERIAL_BUF 512
 
+// ---------- 屏幕旋转（ADR-0005）----------
+// M5GFX rotation: 0=竖屏正常 1=顺时针90°(横屏) 2=180° 3=逆时针90°(横屏)
+#define IMU_CHECK_INTERVAL_MS 500UL   // 重力采样间隔（与显示节流同拍）
+#define IMU_CONFIRM_COUNT 3           // 同一目标方向连续确认 N 次才切换（防抖 1.5s）
+#define GRAV_MAJOR_TH 0.55f           // 主导轴判定阈值（g）
+#define GRAV_CROSS_TH 0.35f           // 交叉轴上限（姿态倾斜时不切换）
+uint8_t curRotation = 0;              // 当前屏幕方向
+
 // ---------- 全局状态 ----------
 
 Config cfg;
@@ -152,6 +160,8 @@ void sendState() {
   doc["battery"] = M5.Power.getBatteryLevel();
   doc["fw"] = FW_VERSION;
   doc["alert_enabled"] = cfg.alertEnabled;
+  doc["rotation"] = curRotation;
+  doc["auto_rotate"] = cfg.autoRotate;
   sendJson(doc);
 }
 
@@ -164,6 +174,8 @@ static int hhmmToMin(const char *s) {
   if (h < 0 || h > 23 || m < 0 || m > 59) return -1;
   return h * 60 + m;
 }
+
+void applyRotation(uint8_t rot);  // 定义见「显示」节（canvas 重建依赖其存在）
 
 void applyConfig() {
   // 若 wifi 参数变化或当前未连接则重连
@@ -194,6 +206,8 @@ void applyConfig() {
     mslAlertActive = false;
     stopAlert();
   }
+  // 应用配置的默认屏幕方向（autoRotate 开启时随后由重力判定接管覆盖）
+  applyRotation((uint8_t)cfg.screenRotation);
 }
 
 void handleConfig(JsonDocument &doc) {
@@ -206,6 +220,9 @@ void handleConfig(JsonDocument &doc) {
   cfg.apiKey = doc["api_key"] | "";
   cfg.balanceWarn = doc["balance_warn"] | DEFAULT_BALANCE_WARN;
   cfg.alertEnabled = doc["alert_enabled"] | false;
+  cfg.autoRotate = doc["auto_rotate"] | false;
+  int rot = doc["screen_rotation"] | -1;
+  if (rot >= 0 && rot <= 3) cfg.screenRotation = (uint8_t)rot;
 
   JsonArray ranges = doc["peak_ranges"];
   if (ranges.isNull()) {
@@ -420,6 +437,75 @@ void manageBalance() {
 
 // ---------- 显示 ----------
 
+// 应用屏幕方向：setRotation 会改变 Display 宽高，必须重建 canvas 双缓冲，
+// 并强制整帧重绘。peakSprite 尺寸固定（108x36），与方向无关，无需重建。
+void applyRotation(uint8_t rot) {
+  if (rot > 3) rot = 0;
+  if (rot == curRotation) return;
+  curRotation = rot;
+  M5.Display.setRotation(rot);
+  canvas.deleteSprite();
+  canvas.setPsram(true);
+  if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) {
+    canvas.setPsram(false);
+    canvas.createSprite(M5.Display.width(), M5.Display.height());
+  }
+  fullRedraw = true;
+}
+
+// 由重力方向推断目标屏幕方向（返回 0..3，-1 表示姿态模糊保持当前）。
+// 轴约定（真机标定 2026-08-03 imu-calib，见 w96p-remote/docs/sticks3-remote-design.md）：
+// M5Unified BMI270 驱动轴系 ≠ 官方图，绕 Z 旋转 90°：
+//   驱动 +X = 朝 USB 端（设备底部）、驱动 +Y = 设备右侧、驱动 +Z = 屏幕外。
+// 静止时加速度计读的是比力（指向上方，与重力相反）。设备长轴（顶部/摄像头）= -X_driver：
+//   顶朝上 → ax<0 → rotation 0    顶朝下 → ax>0 → rotation 2
+//   顶朝右 → ay<0 → rotation 3    顶朝左 → ay>0 → rotation 1
+// （横屏左右 1/3 对应关系经真机实测对调：M5GFX rotation 1 内容顶朝左、rotation 3 顶朝右）
+static int8_t rotationFromGravity(float ax, float ay) {
+  float axa = fabsf(ax), aya = fabsf(ay);
+  if (axa < GRAV_MAJOR_TH && aya < GRAV_MAJOR_TH) return -1;  // 平放/侧放：Z 轴主导
+  if (axa > aya) {
+    if (aya > GRAV_CROSS_TH) return -1;  // 倾斜过重，不切换
+    return ax < 0 ? 0 : 2;
+  } else {
+    if (axa > GRAV_CROSS_TH) return -1;
+    return ay < 0 ? 3 : 1;
+  }
+}
+
+// 重力感应旋屏状态机：周期性采样 IMU，同一目标方向连续确认 N 次才切换（防抖），
+// 避免临界姿态抖动。IMU 不可用（isEnabled()==false）时静默跳过。
+static int8_t  pendingRotation = -1;
+static uint8_t pendingCount = 0;
+static unsigned long lastImuCheck = 0;
+
+void manageRotation() {
+  if (!cfg.autoRotate || !M5.Imu.isEnabled()) return;
+  if (millis() - lastImuCheck < IMU_CHECK_INTERVAL_MS) return;
+  lastImuCheck = millis();
+
+  M5.Imu.update();
+  float ax, ay, az;
+  M5.Imu.getAccel(&ax, &ay, &az);
+
+  int8_t target = rotationFromGravity(ax, ay);
+  if (target < 0) {  // 姿态模糊：清空累积，防止半途计数在晃动后误触发
+    pendingRotation = -1;
+    pendingCount = 0;
+    return;
+  }
+  if (target == pendingRotation) {
+    if (++pendingCount >= IMU_CONFIRM_COUNT) {
+      pendingCount = 0;
+      pendingRotation = -1;
+      applyRotation((uint8_t)target);
+    }
+  } else {
+    pendingRotation = target;
+    pendingCount = 1;
+  }
+}
+
 #define CLR_BG M5.Display.color565(10, 12, 16)
 #define CLR_FG M5.Display.color565(230, 234, 240)
 #define CLR_DIM M5.Display.color565(120, 128, 140)
@@ -438,6 +524,43 @@ const char *weekdayCn(int wday) {
 void renderMainToCanvas(bool synced, time_t now, const FrameSnap &cur) {
   (void)now;
   (void)synced;  // cur.peakImg 已编码同步态
+  const int w = canvas.width();
+
+  if (w > canvas.height()) {
+    // ---- 横屏 240×135：左右分栏 ----
+    // 峰谷大字靠设备底部（USB 端）一侧，时间/倒计时/余额在另一栏：
+    //   rotation 1（顶朝左）→ USB 在右 → 大字右栏
+    //   rotation 3（顶朝右）→ USB 在左 → 大字左栏
+    // 两栏视觉重心仍在屏幕中心。
+    bool bigRight = (curRotation == 1);
+    int bigCx = bigRight ? 182 : 58;  // 大字中心 x（108 宽，落在 0~120 / 120~240 栏内）
+    int txtCx = bigRight ? 58 : 182;  // 文字中心 x
+
+    // 大字（栏内居中，y 中心 68 → 顶 50 底 86）
+    if (cur.peakImg == 0) {
+      canvas.setTextDatum(middle_center);
+      canvas.setFont(&fonts::efontCN_16);
+      canvas.setTextColor(CLR_DIM);
+      canvas.drawString("时间未同步", bigCx, 68);
+    } else {
+      peakSprite[cur.peakImg - 1].pushSprite(&canvas, bigCx - PEAK_W / 2, 50);
+    }
+
+    // 文字栏：时间 / 倒计时 / 余额
+    canvas.setTextDatum(middle_center);
+    canvas.setFont(&fonts::efontCN_12);
+    canvas.setTextColor(CLR_DIM);
+    canvas.drawString(cur.time, txtCx, 24);
+    canvas.setFont(&fonts::efontCN_16);
+    canvas.setTextColor(CLR_FG);
+    canvas.drawString(cur.countdown, txtCx, 50);
+    canvas.setFont(&fonts::efontCN_24);
+    canvas.setTextColor(cur.lowBalance ? CLR_WARN : CLR_FG);
+    canvas.drawString(cur.balance, txtCx, 88);
+    return;
+  }
+
+  // ---- 竖屏 135×240（原布局）----
 
   // 顶部：北京时间
   canvas.setFont(&fonts::efontCN_12);
@@ -487,6 +610,68 @@ void renderMainToCanvas(bool synced, time_t now, const FrameSnap &cur) {
 
 void renderInfoToCanvas(const FrameSnap &cur) {
   // canvas 已由 updateDisplay 调用 fillScreen 清空
+  const int w = canvas.width();
+
+  // 余额大字（两布局共用）
+  char bbuf[32];
+  uint16_t balColor;
+  if (!balanceValid) {
+    snprintf(bbuf, sizeof(bbuf), "--");
+    balColor = CLR_DIM;
+  } else {
+    snprintf(bbuf, sizeof(bbuf), "%.2f 元", balance);
+    balColor = cur.lowBalance ? CLR_WARN : CLR_FG;
+  }
+
+  if (w > canvas.height()) {
+    // ---- 横屏 240×135：标题+返回 / 余额大字 / 状态 / 2 列×3 行详情 ----
+    canvas.setTextDatum(middle_center);
+    canvas.setFont(&fonts::efontCN_12);
+    canvas.setTextColor(CLR_DIM);
+    canvas.drawString("余额详情", w / 2, 8);
+    canvas.setTextDatum(middle_right);
+    canvas.drawString("KEY2 返回", w - 6, 8);
+
+    canvas.setFont(&fonts::efontCN_24);
+    canvas.setTextColor(balColor);
+    canvas.drawString(bbuf, w / 2, 32);
+
+    canvas.setFont(&fonts::efontCN_12);
+    if (!cfg.apiKey.length()) {
+      canvas.setTextColor(CLR_WARN);
+      canvas.drawString("未配置 API Key", w / 2, 66);
+    } else if (balanceValid && balanceExpired) {
+      canvas.setTextColor(CLR_WARN);
+      canvas.drawString("查询失败 · 显示旧数据", w / 2, 66);
+    } else if (balanceValid) {
+      canvas.setTextColor(CLR_OFF);
+      canvas.drawString("查询正常", w / 2, 66);
+    } else {
+      canvas.setTextColor(CLR_WARN);
+      canvas.drawString("等待首次查询", w / 2, 66);
+    }
+
+    // 详情 2 列（左 x=8，右 x=120；12 号半角数字 ~6px，右列最宽 108px）
+    canvas.setTextDatum(middle_left);
+    canvas.setTextColor(CLR_DIM);
+    char l[64], r[64];
+    String ssid = cfg.ssid;
+    if (ssid.length() > 8) ssid = ssid.substring(0, 8);  // 截断防溢出右列
+    int yy = 90;
+    snprintf(l, sizeof(l), "WiFi  %s", cfg.hasWifi() ? ssid.c_str() : "未配置");
+    snprintf(r, sizeof(r), "IP    %s", WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "-");
+    canvas.drawString(l, 8, yy); canvas.drawString(r, 120, yy); yy += 18;
+    snprintf(l, sizeof(l), "时段  %s", cfg.peakCount > 0 ? "自定义" : "官方默认");
+    int batt = M5.Power.getBatteryLevel();
+    snprintf(r, sizeof(r), "电量  %d%%", batt < 0 ? 0 : batt);
+    canvas.drawString(l, 8, yy); canvas.drawString(r, 120, yy); yy += 18;
+    snprintf(l, sizeof(l), "方向  %d° %s", curRotation * 90, cfg.autoRotate ? "自动" : "固定");
+    snprintf(r, sizeof(r), "固件  v%s", FW_VERSION);
+    canvas.drawString(l, 8, yy); canvas.drawString(r, 120, yy);
+    return;
+  }
+
+  // ---- 竖屏 135×240（原布局）----
 
   // 标题
   canvas.setFont(&fonts::efontCN_12);
@@ -496,14 +681,7 @@ void renderInfoToCanvas(const FrameSnap &cur) {
 
   // 余额大字
   canvas.setFont(&fonts::efontCN_24);
-  char bbuf[32];
-  if (!balanceValid) {
-    snprintf(bbuf, sizeof(bbuf), "--");
-    canvas.setTextColor(CLR_DIM);
-  } else {
-    snprintf(bbuf, sizeof(bbuf), "%.2f 元", balance);
-    canvas.setTextColor(cur.lowBalance ? CLR_WARN : CLR_FG);
-  }
+  canvas.setTextColor(balColor);
   canvas.drawString(bbuf, canvas.width() / 2, 46);
 
   // 余额状态
@@ -539,6 +717,8 @@ void renderInfoToCanvas(const FrameSnap &cur) {
   canvas.drawString(line, 10, y); y += 18;
   int batt = M5.Power.getBatteryLevel();
   snprintf(line, sizeof(line), "电量  %d%%", batt < 0 ? 0 : batt);
+  canvas.drawString(line, 10, y); y += 18;
+  snprintf(line, sizeof(line), "方向  %d° %s", curRotation * 90, cfg.autoRotate ? "自动" : "固定");
   canvas.drawString(line, 10, y); y += 18;
 
   canvas.setTextDatum(middle_center);
@@ -649,17 +829,26 @@ void manageAlert() {
 
 void setup() {
   auto m5cfg = M5.config();
-  M5.begin(m5cfg);
-  M5.Display.setRotation(0);  // 竖屏 135x240
+  M5.begin(m5cfg);  // 内部默认启用 IMU（BMI270，见 M5Unified.cpp:2866）
   M5.Display.setBrightness(160);
   M5.Speaker.setVolume(96);   // 提示音音量（电池供电安全音量）
 
-  // 创建双缓冲帧缓冲（StickS3 有 8MB OPI PSRAM，优先用 PSRAM 存放 135×240×2=64.8KB）
+  Serial.begin(115200);
+  delay(300);
+
+  cfgLoad(cfg, prefs);
+
+  // 屏幕方向：按配置的默认方向启动（autoRotate 开启时后续由重力判定接管）
+  curRotation = (uint8_t)cfg.screenRotation;
+  M5.Display.setRotation(curRotation);
+
+  // 创建双缓冲帧缓冲（尺寸跟随当前方向；StickS3 有 8MB OPI PSRAM，
+  // 优先用 PSRAM 存放，竖屏 135×240×2=64.8KB）
   canvas.setPsram(true);
-  if (!canvas.createSprite(135, 240)) {
+  if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) {
     // PSRAM 不可用时退回内部 RAM
     canvas.setPsram(false);
-    canvas.createSprite(135, 240);
+    canvas.createSprite(M5.Display.width(), M5.Display.height());
   }
 
   // 预渲染峰谷大字 sprite（一次性，开机后不变）
@@ -681,8 +870,6 @@ void setup() {
   Serial.begin(115200);
   delay(300);
 
-  cfgLoad(cfg, prefs);
-
   if (cfg.hasWifi()) {
     WiFi.mode(WIFI_STA);
     WiFi.begin(cfg.ssid.c_str(), cfg.password.length() ? cfg.password.c_str() : NULL);
@@ -702,6 +889,7 @@ void loop() {
   manageWiFi();
   manageNtp();
   manageBalance();
+  manageRotation();  // 重力感应旋屏（仅 autoRotate 开启时生效，ADR-0005）
   manageAlert();     // 提示音事件（高峰边沿/停止条件）
   alertTick();       // 告警音播放状态机（非阻塞）
   if (millis() - lastStateSend > STATE_INTERVAL_MS) {

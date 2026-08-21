@@ -24,6 +24,10 @@ struct PeakRange {
   int endMin;    // 结束分钟（若 endMin <= startMin 视为跨午夜）
 };
 
+// 屏幕旋转方向（M5GFX rotation 0..3，见 ADR-0005）：
+// 0=竖屏正常  1=顺时针90°（横屏）  2=180°  3=逆时针90°（横屏）
+#define DEFAULT_SCREEN_ROTATION 0
+
 struct Config {
   String ssid;
   String password;
@@ -33,6 +37,8 @@ struct Config {
   PeakRange peak[MAX_PEAK_RANGES];
   int peakCount = 0;  // 0 = 使用官方默认
   bool alertEnabled = false;  // 提示音功能总开关（默认关，见 ADR-0004）
+  uint8_t screenRotation = DEFAULT_SCREEN_ROTATION;  // 默认屏幕方向（开机方向）
+  bool autoRotate = false;  // 重力感应旋屏开关（默认关，见 ADR-0005）
 
   bool hasWifi() const { return ssid.length() > 0; }
 };
@@ -93,6 +99,9 @@ inline void cfgLoad(Config &c, Preferences &prefs) {
   c.apiKey = prefs.getString("apikey", "");
   c.balanceWarn = prefs.getFloat("bwarn", DEFAULT_BALANCE_WARN);
   c.alertEnabled = prefs.getBool("alert", false);
+  int rot = prefs.getInt("rot", DEFAULT_SCREEN_ROTATION);
+  c.screenRotation = (rot >= 0 && rot <= 3) ? (uint8_t)rot : DEFAULT_SCREEN_ROTATION;
+  c.autoRotate = prefs.getBool("autorot", false);
   String ranges = prefs.getString("ranges", "");
   c.peakCount = 0;
   if (ranges.length() > 0) {
@@ -121,6 +130,8 @@ inline void cfgSave(const Config &c, Preferences &prefs) {
   prefs.putString("apikey", c.apiKey);
   prefs.putFloat("bwarn", c.balanceWarn);
   prefs.putBool("alert", c.alertEnabled);
+  prefs.putInt("rot", c.screenRotation);
+  prefs.putBool("autorot", c.autoRotate);
   if (c.peakCount > 0) {
     String ranges;
     for (int i = 0; i < c.peakCount; i++) {

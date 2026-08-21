@@ -27,6 +27,10 @@ class Config:
     balance_warn: float = DEFAULT_BALANCE_WARN
     # 提示音功能总开关（默认关，见 ADR-0004）
     alert_enabled: bool = False
+    # 屏幕方向：0=竖屏正常 1=顺时针90°(横屏) 2=180° 3=逆时针90°(横屏)（见 ADR-0005）
+    screen_rotation: int = 0
+    # 重力感应旋屏开关（默认关，见 ADR-0005）
+    auto_rotate: bool = False
 
     def to_message(self) -> dict:
         """转换为串口 config 消息（不含 type，由发送方补全）。"""
@@ -36,6 +40,8 @@ class Config:
             "api_key": self.api_key,
             "balance_warn": self.balance_warn,
             "alert_enabled": self.alert_enabled,
+            "screen_rotation": self.screen_rotation,
+            "auto_rotate": self.auto_rotate,
         }
         if self.peak_override:
             msg["peak_ranges"] = [
@@ -66,6 +72,13 @@ def load_config() -> Config:
         except (TypeError, ValueError):
             cfg.balance_warn = DEFAULT_BALANCE_WARN
         cfg.alert_enabled = bool(data.get("alert_enabled", False))
+        try:
+            rot = int(data.get("screen_rotation", 0))
+        except (TypeError, ValueError):
+            rot = 0
+        cfg.screen_rotation = rot if 0 <= rot <= 3 else 0
+        # 只认 JSON 布尔 true，避免手动编辑时字符串 "yes"/"1" 被 bool() 误判
+        cfg.auto_rotate = data.get("auto_rotate", False) is True
         return cfg
     except (OSError, ValueError, TypeError):
         return Config()
@@ -82,6 +95,8 @@ def save_config(cfg: Config) -> None:
         "peak_ranges": [list(r) for r in cfg.peak_ranges],
         "balance_warn": cfg.balance_warn,
         "alert_enabled": cfg.alert_enabled,
+        "screen_rotation": cfg.screen_rotation,
+        "auto_rotate": cfg.auto_rotate,
     }
     CONFIG_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
