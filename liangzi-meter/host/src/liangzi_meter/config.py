@@ -8,7 +8,8 @@ from pathlib import Path
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config.json"
 
 DEFAULT_NTP = "ntp.aliyun.com"
-# 官方默认峰谷（北京时间，2026-08-17 生效）：高峰 9:00-12:00 / 14:00-18:00
+# 官方默认峰谷（北京时间）：高峰 9:00-12:00 / 14:00-18:00（工作日）
+# 2026-08-23 起：周末（周六、周日）全天不区分峰谷，统一按低谷价
 DEFAULT_PEAK_RANGES: list[tuple[str, str]] = [("09:00", "12:00"), ("14:00", "18:00")]
 # 余额告警阈值（元）：余额低于该值，设备与上位机显示红色
 DEFAULT_BALANCE_WARN = 10.0

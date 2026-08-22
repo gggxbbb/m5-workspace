@@ -8,7 +8,8 @@
 
 #define DEFAULT_NTP "ntp.aliyun.com"
 
-// 官方峰谷时段默认值（2026-08-17 生效，UTC+8）：高峰 9:00-12:00 / 14:00-18:00
+// 官方峰谷时段默认值（北京时间 UTC+8）：高峰 9:00-12:00 / 14:00-18:00（工作日）
+// 2026-08-23 起：周末（周六、周日）全天不区分峰谷，统一按低谷价收取调用费用
 #define OFFICIAL_PEAK_MIN 9 * 60
 #define OFFICIAL_PEAK_MAX 12 * 60
 #define OFFICIAL_PEAK_MIN2 14 * 60
@@ -56,7 +57,12 @@ inline PeakRange peakRangeAt(const Config &c, int i) {
   return official[i];
 }
 
-inline bool inPeakWindow(const Config &c, int minuteOfDay) {
+// 是否周末（wday 为 localtime_r 的 tm_wday：0=周日 6=周六）
+inline bool isWeekend(int wday) { return wday == 0 || wday == 6; }
+
+inline bool inPeakWindow(const Config &c, int wday, int minuteOfDay) {
+  // 周末全天低谷（官方 2026-08-23 起：周六/周日不再区分峰谷）
+  if (isWeekend(wday)) return false;
   int n = peakRangeCount(c);
   for (int i = 0; i < n; i++) {
     PeakRange r = peakRangeAt(c, i);
@@ -69,23 +75,26 @@ inline bool inPeakWindow(const Config &c, int minuteOfDay) {
   return false;
 }
 
-// 距下一次峰谷边界切换的秒数（0..86400）；返回 -1 表示不可计算（时间未同步）
-inline long secondsToNextSwitch(const Config &c, time_t now, int minuteOfDay) {
+// 距下一次峰谷边界切换的秒数（0..7 天）；返回 -1 表示不可计算（时间未同步）。
+// 周末全天低谷无边界，仅工作日存在边界；遍历未来 8 天（含今天）取最早未来边界。
+inline long secondsToNextSwitch(const Config &c, time_t now, int wday) {
   if (now <= 0) return -1;
-  time_t dayStart = now - ((now + 8 * 3600) % 86400);  // 北京当日 0 点（epoch）
-  long best = 86400L;
-  int n = peakRangeCount(c);
-  for (int i = 0; i < n; i++) {
-    PeakRange r = peakRangeAt(c, i);
-    long b1 = dayStart + r.startMin * 60L;
-    long b2 = dayStart + r.endMin * 60L;
-    long d1 = b1 - now;
-    long d2 = b2 - now;
-    if (d1 <= 0) d1 += 86400;
-    if (d2 <= 0) d2 += 86400;
-    if (d1 < best) best = d1;
-    if (d2 < best) best = d2;
+  long dayStart = now - ((now + 8 * 3600) % 86400);  // 北京当日 0 点（epoch）
+  long best = 86400L * 8;
+  for (int d = 0; d < 8; d++) {
+    int wd = (wday + d) % 7;
+    if (isWeekend(wd)) continue;  // 周末无峰谷边界
+    long base = dayStart + d * 86400L;
+    int n = peakRangeCount(c);
+    for (int i = 0; i < n; i++) {
+      PeakRange r = peakRangeAt(c, i);
+      long b1 = base + r.startMin * 60L;
+      long b2 = base + r.endMin * 60L;
+      if (b1 > now && b1 - now < best) best = b1 - now;
+      if (b2 > now && b2 - now < best) best = b2 - now;
+    }
   }
+  if (best >= 86400L * 8) best = 86400L;  // 兜底（一周内必有工作日，理论不可达）
   return best;
 }
 
