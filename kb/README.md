@@ -23,6 +23,13 @@ Arduino 开发知识库，事实来源均为 M5Stack 官方文档，未核实项
 | [esp-now.md](esp-now.md) | StickS3 ↔ Cardputer-Adv 无线直连（已编译验证），含核心 3.x 回调签名坑 |
 | [lib-usbhid.md](lib-usbhid.md) | core 3.3.8 自带 USB HID 键盘（USBHIDKeyboard，ESP32-S3 原生 USB），含 Windows 关机快捷键示例 |
 | [lib-tinyusb-usb.md](lib-tinyusb-usb.md) | **TinyUSB 实战**（真机验证）：MSC 虚拟 U 盘（跨扇区 READ10 坑、Windows 缓存限制）、USBHIDVendor 双向通道（OUTPUT→feature 路由坑）、主机调试方法 |
+## 外部参考仓库（submodule）
+
+| 目录 | 仓库 | 说明 |
+|---|---|---|
+| [ai-passport/](ai-passport/) | [FoloToy/ai-passport](https://github.com/FoloToy/ai-passport) | ESP32-C3 可穿戴 AI 硬件开发基线（ESP-IDF，非 Arduino/M5Stack）：`components/bsp` 板级 API、`docs/hardware-design/AI_HARDWARE_DEVELOPMENT_GUIDE.md` 引脚/验收/排错、`demo/*` 分支为应用设计案例。含双语文档（`*.zh_CN.md`） |
+
+克隆本仓库需 `git clone --recurse-submodules`，已克隆则 `git submodule update --init kb/ai-passport`。
 
 ## 官方库（本地安装版本为权威）
 

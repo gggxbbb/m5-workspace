@@ -1,0 +1,3 @@
+[submodule "kb/ai-passport"]
+	path = kb/ai-passport
+	url = https://github.com/FoloToy/ai-passport.git
