@@ -8,8 +8,9 @@
 
 #define DEFAULT_NTP "ntp.aliyun.com"
 
-// 官方峰谷时段默认值（北京时间 UTC+8）：高峰 9:00-12:00 / 14:00-18:00（工作日）
-// 2026-08-23 起：周末（周六、周日）全天不区分峰谷，统一按低谷价收取调用费用
+// DeepSeek 官方峰谷规则（北京时间 UTC+8）：
+// 周一至周五（不含中国法定节假日）9:00-12:00 / 14:00-18:00 为高峰，其余为低谷。
+// 来源：https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
 #define OFFICIAL_PEAK_MIN 9 * 60
 #define OFFICIAL_PEAK_MAX 12 * 60
 #define OFFICIAL_PEAK_MIN2 14 * 60
@@ -57,12 +58,37 @@ inline PeakRange peakRangeAt(const Config &c, int i) {
   return official[i];
 }
 
-// 是否周末（wday 为 localtime_r 的 tm_wday：0=周日 6=周六）
-inline bool isWeekend(int wday) { return wday == 0 || wday == 6; }
+// 国务院办公厅《2026 年部分节假日安排的通知》（国办发明电〔2025〕7号）。
+// 来源：https://www.gov.cn/gongbao/2025/issue_12406/content_7048922.html
+// DeepSeek 排除“中国法定节假日”，因此这里记录通知中的完整放假日期区间；
+// 调休形成的周末工作日仍是低谷，因为 DeepSeek 明确只把周一至周五列为高峰候选日。
+constexpr bool isChinaPublicHoliday(int year, int month, int day) {
+  const int monthDay = month * 100 + day;
+  return year == 2026 &&
+         ((monthDay >= 101 && monthDay <= 103) ||      // 元旦
+          (monthDay >= 215 && monthDay <= 223) ||      // 春节
+          (monthDay >= 404 && monthDay <= 406) ||      // 清明节
+          (monthDay >= 501 && monthDay <= 505) ||      // 劳动节
+          (monthDay >= 619 && monthDay <= 621) ||      // 端午节
+          (monthDay >= 925 && monthDay <= 927) ||      // 中秋节
+          (monthDay >= 1001 && monthDay <= 1007));     // 国庆节
+}
 
-inline bool inPeakWindow(const Config &c, int wday, int minuteOfDay) {
-  // 周末全天低谷（官方 2026-08-23 起：周六/周日不再区分峰谷）
-  if (isWeekend(wday)) return false;
+// wday 为 localtime_r 的 tm_wday：0=周日，6=周六。
+constexpr bool isWeekend(int wday) { return wday == 0 || wday == 6; }
+
+constexpr bool isOfficialPeakDay(int year, int month, int day, int wday) {
+  return !isWeekend(wday) && !isChinaPublicHoliday(year, month, day);
+}
+
+static_assert(isChinaPublicHoliday(2026, 2, 23), "春节末日必须是法定节假日");
+static_assert(!isChinaPublicHoliday(2026, 2, 24), "春节后首日不应是法定节假日");
+static_assert(!isOfficialPeakDay(2026, 10, 1, 4), "国庆节全天必须是低谷");
+static_assert(isOfficialPeakDay(2026, 9, 24, 4), "普通周四必须可进入高峰");
+
+inline bool inPeakWindow(const Config &c, int year, int month, int day, int wday,
+                         int minuteOfDay) {
+  if (!isOfficialPeakDay(year, month, day, wday)) return false;
   int n = peakRangeCount(c);
   for (int i = 0; i < n; i++) {
     PeakRange r = peakRangeAt(c, i);
@@ -75,16 +101,21 @@ inline bool inPeakWindow(const Config &c, int wday, int minuteOfDay) {
   return false;
 }
 
-// 距下一次峰谷边界切换的秒数（0..7 天）；返回 -1 表示不可计算（时间未同步）。
-// 周末全天低谷无边界，仅工作日存在边界；遍历未来 8 天（含今天）取最早未来边界。
-inline long secondsToNextSwitch(const Config &c, time_t now, int wday) {
+// 距下一次峰谷边界切换的秒数；返回 -1 表示不可计算（时间未同步）。
+// 周末和法定节假日无边界。16 天窗口覆盖 2026 年最长的春节连续低谷区间。
+inline long secondsToNextSwitch(const Config &c, time_t now) {
   if (now <= 0) return -1;
   long dayStart = now - ((now + 8 * 3600) % 86400);  // 北京当日 0 点（epoch）
-  long best = 86400L * 8;
-  for (int d = 0; d < 8; d++) {
-    int wd = (wday + d) % 7;
-    if (isWeekend(wd)) continue;  // 周末无峰谷边界
+  const int lookaheadDays = 16;
+  long best = 86400L * lookaheadDays;
+  for (int d = 0; d < lookaheadDays; d++) {
     long base = dayStart + d * 86400L;
+    time_t localNoon = base + 12 * 3600L;  // 避免边界附近的日期换算歧义
+    struct tm dayTm;
+    localtime_r(&localNoon, &dayTm);
+    int year = dayTm.tm_year + 1900;
+    int month = dayTm.tm_mon + 1;
+    if (!isOfficialPeakDay(year, month, dayTm.tm_mday, dayTm.tm_wday)) continue;
     int n = peakRangeCount(c);
     for (int i = 0; i < n; i++) {
       PeakRange r = peakRangeAt(c, i);
@@ -94,7 +125,7 @@ inline long secondsToNextSwitch(const Config &c, time_t now, int wday) {
       if (b2 > now && b2 - now < best) best = b2 - now;
     }
   }
-  if (best >= 86400L * 8) best = 86400L;  // 兜底（一周内必有工作日，理论不可达）
+  if (best >= 86400L * lookaheadDays) return -1;
   return best;
 }
 

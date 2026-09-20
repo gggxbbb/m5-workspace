@@ -58,12 +58,14 @@ JSON Lines @ 115200，见 [docs/adr/0002-jsonl-serial-protocol.md](docs/adr/0002
 {"type":"config","wifi":{"ssid":"...","password":"..."},"ntp":"ntp.aliyun.com","api_key":"sk-...","balance_warn":10.0,"peak_ranges":[{"start":"09:00","end":"12:00"},{"start":"14:00","end":"18:00"}]}
 {"type":"ack","ok":true,"msg":"config applied"}
 {"type":"get_state"}
-{"type":"state","time":"2026-08-18 09:19:16","phase":"peak","balance":110.0,"balance_valid":true,"wifi":true,"ssid":"...","battery":87}
+{"type":"state","time":"2026-08-18 09:19:16","phase":"peak","weekend":false,"holiday":false,"balance":110.0,"balance_valid":true,"wifi":true,"ssid":"...","battery":87}
 ```
 
 ## 峰谷时段（官方）
 
-北京时间 **09:00–12:00**、**14:00–18:00** 为高峰（工作日），其余为空闲（价格为高峰一半）。**周末（周六、周日）全天不区分峰谷，统一按低谷价收取**（2026-08-23 起执行）；空闲/低谷时段倒计时指向下一个工作日（周一）的首个高峰边界。时段可在上位机勾选「覆盖官方峰谷时段」自定义，未勾选则使用上述默认。
+按 [DeepSeek 官方定价页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)：北京时间周一至周五（**不含中国法定节假日**）的 **09:00–12:00**、**14:00–18:00** 为高峰，其余时段为空闲（价格为高峰一半）。周末和法定节假日全天低谷，倒计时会跳过这些日期。上位机可覆盖每日高峰时刻范围，但周末/节假日日期规则不被覆盖。
+
+固件当前内置国务院办公厅公布的 **2026 年**放假日期（国办发明电〔2025〕7号）；进入新年份前需依据当年通知更新节假日表。
 
 ## 已知限制
 

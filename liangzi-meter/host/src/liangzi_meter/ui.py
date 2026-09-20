@@ -114,7 +114,7 @@ class MainWindow(QMainWindow):
         form.addRow("", self.autorot_check)
 
         self.peak_check = QCheckBox(
-            "覆盖官方峰谷时段（官方默认 09:00-12:00 / 14:00-18:00，周末全天低谷）"
+            "覆盖官方高峰时段（周一至周五，法定节假日及周末全天低谷）"
         )
         form.addRow("", self.peak_check)
         peak_grid = QVBoxLayout()
@@ -302,12 +302,18 @@ class MainWindow(QMainWindow):
     def _apply_state(self, msg: dict) -> None:
         self.st_time.setText(str(msg.get("time", "-")))
         phase = msg.get("phase")
-        weekend = bool(msg.get("weekend"))  # 周末全天低谷（官方 2026-08-23 起）
+        weekend = bool(msg.get("weekend"))
+        holiday = bool(msg.get("holiday"))
         if phase == "peak":
             self.st_phase.setText("高峰期 梁文峰")
             self.st_phase.setStyleSheet(f"color: {CLR_PEAK}; font-weight: bold;")
         elif phase == "offpeak":
-            self.st_phase.setText("周末 · 低谷 梁文谷" if weekend else "非高峰期 梁文谷")
+            if holiday:
+                self.st_phase.setText("节假日 · 低谷 梁文谷")
+            elif weekend:
+                self.st_phase.setText("周末 · 低谷 梁文谷")
+            else:
+                self.st_phase.setText("非高峰期 梁文谷")
             self.st_phase.setStyleSheet(f"color: {CLR_OFF}; font-weight: bold;")
         else:
             self.st_phase.setText("时间未同步")

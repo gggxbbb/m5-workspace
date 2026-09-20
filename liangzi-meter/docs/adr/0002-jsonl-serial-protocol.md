@@ -18,7 +18,7 @@
 | 上位机 → 固件 | `config` | 全量配置快照（WiFi/NTP/API key/峰谷覆盖/提示音/屏幕方向/旋屏开关），整体覆盖 NVS |
 | 固件 → 上位机 | `ack` | 对 `config` 的确认（成功/失败 + 原因） |
 | 上位机 → 固件 | `get_state` | 请求当前状态快照 |
-| 固件 → 上位机 | `state` | 状态上报：时间/峰谷/余额/电量/WiFi 状态 |
+| 固件 → 上位机 | `state` | 状态上报：时间/峰谷（含 `weekend`、`holiday` 日期标记）/余额/电量/WiFi 状态 |
 
 - 配置为**全量覆盖**语义：每次 `config` 携带全部字段，未携带字段视为清空（或保持默认）。
 - `config` 消息字段（2026-08-21 增补）：`wifi{ssid,password}` / `ntp` / `api_key` / `balance_warn` / `peak_ranges[]` / `alert_enabled` / `screen_rotation`（0..3，见 ADR-0005）/ `auto_rotate`（bool，见 ADR-0005）。

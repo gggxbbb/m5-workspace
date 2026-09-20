@@ -16,7 +16,7 @@
 #include "peak_font.h"
 #include "alert.h"
 
-#define FW_VERSION "1.2.0"
+#define FW_VERSION "1.3.0"
 #define MODEL_NAME "StickS3"
 
 #define BALANCE_HOST "api.deepseek.com"
@@ -147,8 +147,13 @@ void sendState() {
   doc["time"] = tbuf;
   int md = tmv.tm_hour * 60 + tmv.tm_min;
   if (timeSynced) {
-    doc["phase"] = inPeakWindow(cfg, tmv.tm_wday, md) ? "peak" : "offpeak";
-    doc["weekend"] = isWeekend(tmv.tm_wday);  // 周末全天低谷（官方 2026-08-23 起）
+    int year = tmv.tm_year + 1900;
+    int month = tmv.tm_mon + 1;
+    doc["phase"] = inPeakWindow(cfg, year, month, tmv.tm_mday, tmv.tm_wday, md)
+                       ? "peak"
+                       : "offpeak";
+    doc["weekend"] = isWeekend(tmv.tm_wday);
+    doc["holiday"] = isChinaPublicHoliday(year, month, tmv.tm_mday);
   } else {
     doc["phase"] = "unknown";
   }
@@ -307,7 +312,8 @@ bool inPeakWatch() {
   if (now <= 1600000000L) return false;
   struct tm tmv;
   localtime_r(&now, &tmv);
-  return inPeakWindow(cfg, tmv.tm_wday, tmv.tm_hour * 60 + tmv.tm_min);
+  return inPeakWindow(cfg, tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                      tmv.tm_wday, tmv.tm_hour * 60 + tmv.tm_min);
 }
 
 // 完成一次查询（成功或失败），更新全局余额状态，清理连接，回 IDLE
@@ -739,7 +745,9 @@ void updateDisplay() {
   struct tm tmv;
   localtime_r(&now, &tmv);
   int md = tmv.tm_hour * 60 + tmv.tm_min;
-  bool peak = synced && inPeakWindow(cfg, tmv.tm_wday, md);
+  bool peak = synced &&
+              inPeakWindow(cfg, tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                           tmv.tm_wday, md);
 
   FrameSnap cur;
   memset(&cur, 0, sizeof(cur));
@@ -747,7 +755,7 @@ void updateDisplay() {
     snprintf(cur.time, sizeof(cur.time), "%02d:%02d:%02d %02d-%02d %s",
              tmv.tm_hour, tmv.tm_min, tmv.tm_sec, tmv.tm_mon + 1, tmv.tm_mday,
              weekdayCn(tmv.tm_wday));
-    long secs = secondsToNextSwitch(cfg, now, tmv.tm_wday);
+    long secs = secondsToNextSwitch(cfg, now);
     if (secs < 0) secs = 0;
     snprintf(cur.countdown, sizeof(cur.countdown), "%02ld:%02ld:%02ld",
              secs / 3600, (secs / 60) % 60, secs % 60);
@@ -810,7 +818,10 @@ void manageAlert() {
   if (synced) {
     struct tm tmv;
     localtime_r(&now, &tmv);
-    img = inPeakWindow(cfg, tmv.tm_wday, tmv.tm_hour * 60 + tmv.tm_min) ? 1 : 2;
+    img = inPeakWindow(cfg, tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                       tmv.tm_wday, tmv.tm_hour * 60 + tmv.tm_min)
+              ? 1
+              : 2;
   }
 
   if (cfg.alertEnabled) {
