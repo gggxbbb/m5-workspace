@@ -10,6 +10,7 @@
 |---|---|---|
 | [w96p-remote](w96p-remote/README.md) | 通过低功耗蓝牙（BLE）遥控 Witrn W96P/W66D 风扇，支持按键、体感手势和彩屏界面 | 协议层与 M5StickS3 固件已通过编译，待真机联调 |
 | [liangzi-meter](liangzi-meter/README.md) | 显示北京时间、DeepSeek 峰谷状态与账户余额，通过 PyQt6 配置工具下发设置 | 可用 |
+| [minecraft-motd](minecraft-motd/README.md) | StickS3 直接查询 Minecraft Java 服务器，支持彩色 MOTD、耗时详情、双向横屏和 USB 上位机配置 | 已刷写，实机查询正常 |
 | [usb-poweroff](usb-poweroff/usb-poweroff.ino) | 通过 USB HID 发送关机快捷键 | 最小示例 |
 | [espnow-smoke](espnow-smoke/espnow-smoke.ino) | 验证 ESP-NOW 无线通信 | 已通过编译 |
 
