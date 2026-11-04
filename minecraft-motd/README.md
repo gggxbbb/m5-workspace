@@ -15,12 +15,12 @@ python -m pip install "pyserial>=3.5,<4"
 python minecraft-motd/host/start.py
 ```
 
-1. 通过 USB 连接 StickS3，选择串口，点击“连接设备”。
+1. 通过 USB 连接 StickS3，选择串口，点击“Connect”。
 2. 填写 Wi-Fi 名称、密码、服务器地址和端口，选择屏幕方向。
-3. 点击“保存到设备”。设备保存设置并连接 Wi-Fi，随后开始查询。
-4. 在“响应信息”查看耗时和服务器原始 JSON；点击“立即查询”刷新结果。
+3. 点击“Save to device”。设备保存设置并连接 Wi-Fi，随后开始查询。
+4. 在“Server response”查看耗时和服务器原始 JSON；点击“Query now”刷新结果。
 
-设备将设置保存在 NVS 中，重新上电时加载设置。上位机通过 USB 串口配置设备，Wi-Fi 与服务器字段由用户填写。密码输入框留空表示保留设备已存密码，选择“开放网络”表示使用空密码。
+设备将设置保存在 NVS 中，重新上电时加载设置。上位机通过 USB 串口配置设备，Wi-Fi 与服务器字段由用户填写。密码输入框留空表示保留设备已存密码，选择“Open network”表示使用空密码。
 
 | 设置 | 范围或用途 |
 |---|---|
@@ -35,11 +35,11 @@ python minecraft-motd/host/start.py
 | 阶段超时 | 1～30 秒，默认 5 秒，分别约束 TCP、状态交换和 Ping/Pong |
 | 屏幕亮度 | 20～255，默认 150 |
 
-DNS 解析使用 ESP32 网络库的解析时限。域名使用 SRV 记录时，在“连接目标”填写 SRV 的目标域名，在“服务器端口”填写 SRV 的端口。
+DNS 解析使用 ESP32 网络库的解析时限。域名使用 SRV 记录时，在“Connect host (optional)”填写 SRV 的目标域名，在“Server port”填写 SRV 的端口。
 
 ## 设备界面
 
-主页面显示查询状态、电量、服务器地址、Ping/Pong 延迟、彩色 MOTD、在线人数、服务器版本和结果时间。中文使用 M5GFX 内置字库。过长的 MOTD 行水平滚动，多行内容按两行分页；翻页时长随行宽增加。
+设备和上位机界面使用英文。主页面显示查询状态、电量、服务器地址、Ping/Pong 延迟、彩色 MOTD、在线人数、服务器版本和结果时间。MOTD 使用 M5GFX 内置字库显示中文。过长的 MOTD 行水平滚动，多行内容按两行分页；翻页时长随行宽增加。
 
 | 操作 | 行为 |
 |---|---|
@@ -91,18 +91,18 @@ python minecraft-motd/tools/verify_host.py SERVER_HOST SERVER_PORT
 
 将 `SERVER_HOST` 和 `SERVER_PORT` 替换为待查询地址。`verify_host.py` 创建真实 Tk 窗口并隐藏窗口，验证两个方向、上位机字段、固件共用的配置校验代码和密码响应行为。
 
-通过 `python minecraft-motd/tools/verify_usb.py COMx` 验证真实设备的配置读取与状态响应。
+通过 `python minecraft-motd/tools/verify_usb.py COMx` 验证真实设备的配置读取与状态响应。添加 `--wait-query` 验证设备连接服务器并完成查询。
 
 ## 验证结果
 
 2026-11-04 完成以下验证：
 
-- StickS3 固件编译通过，程序占用 1,806,811 字节，约为应用分区的 54%；静态数据占用 49,616 字节。
+- StickS3 英文界面固件编译通过，程序占用 1,806,955 字节，约为应用分区的 54%；静态数据占用 49,616 字节。
 - 固件通过 COM9 刷写到 ESP32-S3-PICO-1，写入数据校验通过。
-- 实机 `get_config`、`get_state` 返回成功，配置与运行状态读取通过。
+- 英文固件实机 `get_config`、`get_state` 返回成功，已存配置加载、Wi-Fi 连接和服务器查询通过，查询阶段返回 `Done`。
 - 共用查询代码通过真实服务器查询，收到 `CSJ's Server`、版本 `1.20.1`、人数 `2/20`，测得 Ping/Pong 为 31 毫秒。
-- 上位机窗口初始化、两个方向、中文及空格名称、配置保存格式、密码保留和八项边界校验通过。
+- 上位机英文控件与提示文字、窗口初始化、两个方向、中文及空格名称、配置保存格式、密码保留和八项边界校验通过。
 
-设备已通过上位机完成网络与服务器配置，用户确认实机服务器查询正常。
+设备已通过上位机完成网络与服务器配置，用户确认英文界面效果与实机服务器查询正常。
 
 硬件接口以本工作区 `kb/` 为依据，查询顺序参考 [PrismarineJS 的 Ping 实现](https://github.com/PrismarineJS/node-minecraft-protocol/blob/master/src/ping.js)。

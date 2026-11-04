@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -18,7 +19,18 @@ def validate(executable, settings, expected):
         check=False,
     )
     assert (response.returncode == 0) == expected, response.stderr.decode("utf-8", errors="replace")
+    assert re.search(r"[\u3400-\u9fff]", response.stderr.decode("utf-8")) is None
     return json.loads(response.stdout) if expected else None
+
+
+def verify_english_widgets(widget):
+    if "text" in widget.keys():
+        assert re.search(r"[\u3400-\u9fff]", str(widget.cget("text"))) is None
+    if widget.winfo_class() == "TNotebook":
+        for tab in widget.tabs():
+            assert re.search(r"[\u3400-\u9fff]", widget.tab(tab, "text")) is None
+    for child in widget.winfo_children():
+        verify_english_widgets(child)
 
 
 def main():
@@ -30,6 +42,9 @@ def main():
     root.withdraw()
     app = App(root)
     root.update_idletasks()
+    verify_english_widgets(root)
+    assert app.status.get() == "Select the StickS3 serial port"
+    assert app.result_summary.get() == "Waiting for device response"
     executable = Path(__file__).resolve().parents[1] / ".build" / "native" / "native-probe.exe"
     app.values["ssid"].set(" MOTD 验证 ")
     app.values["host"].set(args.host)
@@ -57,10 +72,12 @@ def main():
     except ValueError:
         pass
     else:
-        raise AssertionError("上位机必须拒绝无效端口")
+        raise AssertionError("The desktop app must reject invalid ports")
+    assert app.read_button.cget("text") == "Read settings"
+    assert app.save_button.cget("text") == "Save to device"
     assert app.root.winfo_exists()
     root.destroy()
-    print("PASS: 真实 Tk 窗口初始化、两个横屏方向、跨语言配置校验、密码保护及 8 项边界检查")
+    print("PASS: English UI, Tk initialization, both rotations, settings validation, password protection and 8 boundary checks")
 
 
 if __name__ == "__main__":

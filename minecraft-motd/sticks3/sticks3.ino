@@ -176,14 +176,14 @@ void drawMotdLine(const minecraft::Line& line, int y, uint32_t elapsed) {
 }
 
 void drawHeader(bool connected) {
-  const char* state = "等待";
+  const char* state = "Waiting";
   uint32_t color = kMuted;
-  if (!configured) { state = "配置"; color = kRed; }
+  if (!configured) { state = "Setup"; color = kRed; }
   else if (!connected) { state = "Wi-Fi"; color = kRed; }
-  else if (busy) { state = "查询中"; }
-  else if (result && result->complete) { state = "在线"; color = kGreen; }
-  else if (result && result->statusReceived) { state = "Pong 失败"; color = kRed; }
-  else if (result) { state = "查询失败"; color = kRed; }
+  else if (busy) { state = "Querying"; }
+  else if (result && result->complete) { state = "Online"; color = kGreen; }
+  else if (result && result->statusReceived) { state = "Pong failed"; color = kRed; }
+  else if (result) { state = "Query failed"; color = kRed; }
   canvas.fillCircle(10, 9, 2, color);
   label(state, 17, 2, color, &fonts::efontCN_10);
   char text[40];
@@ -204,22 +204,22 @@ void drawScreen(uint32_t now, bool connected) {
   canvas.fillSprite(kBackground);
   drawHeader(connected);
   if (!configured) {
-    label("连接上位机完成配置", 8, 38, kForeground, &fonts::efontCN_14);
-    label("USB 连接电脑", 8, 63, kMuted);
+    label("Configure with desktop app", 8, 38, kForeground, &fonts::efontCN_14);
+    label("Connect USB to your PC", 8, 63, kMuted);
   } else if (!connected) {
-    label(now - wifiAttemptAt < 15000 ? "正在连接 Wi-Fi" : "Wi-Fi 连接失败", 8, 38,
+    label(now - wifiAttemptAt < 15000 ? "Connecting to Wi-Fi" : "Wi-Fi connection failed", 8, 38,
           now - wifiAttemptAt < 15000 ? kForeground : kRed, &fonts::efontCN_14);
-    label("A 重新连接", 8, 63, kMuted);
+    label("A Reconnect", 8, 63, kMuted);
   } else if (details) {
-    label("查询详情", 8, 21, kForeground, &fonts::efontCN_14);
+    label("Query details", 8, 21, kForeground, &fonts::efontCN_14);
     if (result) {
       clippedLabel(result->address + ":" + std::to_string(settings.port), 8, 41, 224, kMuted);
       timing("DNS", result->dnsMs, 8, 60);
       timing("TCP", result->tcpMs, 120, 60);
-      timing("状态响应", result->statusMs, 8, 88);
+      timing("Status", result->statusMs, 8, 88);
       timing("Ping/Pong", result->pongMs, 120, 88);
     } else {
-      label(busy ? "正在查询服务器" : "等待查询", 8, 56, kMuted);
+      label(busy ? "Querying server" : "Waiting for query", 8, 56, kMuted);
     }
   } else {
     clippedLabel(settings.host, 8, 23, 164, kForeground, &fonts::efontCN_14);
@@ -248,8 +248,8 @@ void drawScreen(uint32_t now, bool connected) {
         if (index < result->lines.size()) drawMotdLine(result->lines[index], 50 + i * 20, elapsed);
       }
       char players[40];
-      if (result->online >= 0) snprintf(players, sizeof(players), "在线 %ld / %ld", static_cast<long>(result->online), static_cast<long>(result->maximum));
-      else snprintf(players, sizeof(players), "在线 -- / --");
+      if (result->online >= 0) snprintf(players, sizeof(players), "%ld / %ld", static_cast<long>(result->online), static_cast<long>(result->maximum));
+      else snprintf(players, sizeof(players), "-- / --");
       canvas.setClipRect(8, 96, 120, 16);
       label(players, 8, 96);
       canvas.clearClipRect();
@@ -267,14 +267,14 @@ void drawScreen(uint32_t now, bool connected) {
       canvas.clearClipRect();
       canvas.setTextWrap(false);
     } else {
-      label(busy ? "正在查询服务器" : "等待查询", 8, 56, kMuted, &fonts::efontCN_14);
+      label(busy ? "Querying server" : "Waiting for query", 8, 56, kMuted, &fonts::efontCN_14);
     }
   }
   canvas.drawFastHLine(8, 116, 224, kLine);
-  label(details ? "A 刷新  B 返回" : "A 刷新  B 详情", 8, 120, kMuted, &fonts::efontCN_10);
+  label(details ? "A Refresh  B Back" : "A Refresh  B Details", 8, 120, kMuted, &fonts::efontCN_10);
   char age[24];
-  if (busy) snprintf(age, sizeof(age), "查询中");
-  else if (result) snprintf(age, sizeof(age), "%lu 秒前", static_cast<unsigned long>((now - finishedAt) / 1000));
+  if (busy) snprintf(age, sizeof(age), "Querying");
+  else if (result) snprintf(age, sizeof(age), "%lus ago", static_cast<unsigned long>((now - finishedAt) / 1000));
   else snprintf(age, sizeof(age), "%d°", rotation * 90);
   rightLabel(age, 232, 120, kMuted, &fonts::efontCN_10);
   canvas.pushSprite(0, 0);
@@ -347,10 +347,10 @@ void applySettings(minecraft::Settings config) {
 
 void rotateScreen() {
   settings.rotation = rotation == 1 ? 3 : 1;
-  if (configured && !saveSettings(settings)) fatal("屏幕方向保存失败");
+  if (configured && !saveSettings(settings)) fatal("Failed to save screen rotation");
   rotation = settings.rotation;
   M5.Display.setRotation(rotation);
-  if (M5.Display.width() != 240 || M5.Display.height() != 135) fatal("屏幕尺寸无效");
+  if (M5.Display.width() != 240 || M5.Display.height() != 135) fatal("Invalid display dimensions");
   dirty = true;
 }
 
@@ -361,7 +361,7 @@ void handleCommand(const std::string& input) {
   reply["ok"] = false;
   const auto error = deserializeJson(command, input, DeserializationOption::NestingLimit(8));
   if (error || !command["id"].is<uint32_t>() || !command["cmd"].is<const char*>()) {
-    reply["error"] = "串口命令格式无效";
+    reply["error"] = "Invalid serial command format";
     sendJson(reply);
     return;
   }
@@ -374,12 +374,12 @@ void handleCommand(const std::string& input) {
     std::string validation;
     if (!command["settings"].is<JsonObject>() ||
         !minecraft::readSettings(command["settings"].as<JsonObjectConst>(), settings, next, validation)) {
-      reply["error"] = validation.empty() ? "缺少配置对象" : validation;
+      reply["error"] = validation.empty() ? "Missing settings object" : validation;
       sendJson(reply);
       return;
     }
     if (!saveSettings(next)) {
-      reply["error"] = "配置保存失败";
+      reply["error"] = "Failed to save settings";
       sendJson(reply);
       return;
     }
@@ -387,7 +387,7 @@ void handleCommand(const std::string& input) {
     minecraft::writeSettings(reply["config"].to<JsonObject>(), settings);
   } else if (name == "refresh") {
     if (!configured || WiFi.status() != WL_CONNECTED || busy) {
-      reply["error"] = "请确认配置、Wi-Fi 连接及查询状态";
+      reply["error"] = "Check settings, Wi-Fi connection and query status";
       sendJson(reply);
       return;
     }
@@ -395,7 +395,7 @@ void handleCommand(const std::string& input) {
   } else if (name == "get_state") {
     sendState(true);
   } else {
-    reply["error"] = "未知命令";
+    reply["error"] = "Unknown command";
     sendJson(reply);
     return;
   }
@@ -412,7 +412,7 @@ void serialLoop(uint32_t now) {
         JsonDocument reply;
         reply["type"] = "reply";
         reply["ok"] = false;
-        reply["error"] = "串口命令超过 4096 字节";
+        reply["error"] = "Serial command exceeds 4096 bytes";
         sendJson(reply);
       } else if (!serialInput.empty()) {
         handleCommand(serialInput);
@@ -428,7 +428,7 @@ void serialLoop(uint32_t now) {
     JsonDocument reply;
     reply["type"] = "reply";
     reply["ok"] = false;
-    reply["error"] = "串口命令接收超时";
+    reply["error"] = "Serial command reception timed out";
     sendJson(reply);
     serialInput.clear();
     inputOversize = false;
@@ -448,7 +448,7 @@ void acceptResponse(uint32_t now, bool connected) {
   ProbeResponse* response = nullptr;
   if (xQueueReceive(responses, &response, 0) != pdTRUE) return;
   busy = false;
-  if (!response) fatal("查询结果无效");
+  if (!response) fatal("Invalid query result");
   if (discardResponse || !connected || response->generation != generation) {
     delete response;
     discardResponse = false;
@@ -458,7 +458,7 @@ void acceptResponse(uint32_t now, bool connected) {
   }
   result.reset(new (std::nothrow) minecraft::Result(std::move(response->result)));
   delete response;
-  if (!result) fatal("查询结果分配失败");
+  if (!result) fatal("Failed to allocate query result");
   finishedAt = now;
   animationAt = now;
   if (serialOutput.size() < 3) sendState(true);
@@ -475,26 +475,26 @@ void setup() {
   config.internal_imu = false;
   config.internal_rtc = false;
   M5.begin(config);
-  if (!preferences.begin("minecraft-motd", false)) fatal("配置存储初始化失败");
+  if (!preferences.begin("minecraft-motd", false)) fatal("Failed to initialize settings storage");
   const String stored = preferences.getString("settings", "");
   if (!stored.isEmpty()) {
     JsonDocument json;
     std::string validation;
     if (deserializeJson(json, stored) ||
-        !minecraft::readSettings(json.as<JsonObjectConst>(), settings, settings, validation)) fatal("已存配置无效");
+        !minecraft::readSettings(json.as<JsonObjectConst>(), settings, settings, validation)) fatal("Invalid saved settings");
   }
   rotation = settings.rotation;
   M5.Display.setRotation(rotation);
-  if (M5.Display.width() != 240 || M5.Display.height() != 135) fatal("屏幕尺寸无效");
+  if (M5.Display.width() != 240 || M5.Display.height() != 135) fatal("Invalid display dimensions");
   M5.Display.setBrightness(settings.brightness);
   canvas.setColorDepth(16);
-  if (!canvas.createSprite(240, 135)) fatal("显示缓冲区分配失败");
+  if (!canvas.createSprite(240, 135)) fatal("Failed to allocate display buffer");
   canvas.setTextWrap(false);
   M5.BtnB.setHoldThresh(700);
   requests = xQueueCreate(1, sizeof(ProbeJob*));
   responses = xQueueCreate(1, sizeof(ProbeResponse*));
-  if (!requests || !responses) fatal("查询队列创建失败");
-  if (xTaskCreate(queryTask, "minecraft-query", 16384, nullptr, 1, nullptr) != pdPASS) fatal("查询任务创建失败");
+  if (!requests || !responses) fatal("Failed to create query queues");
+  if (xTaskCreate(queryTask, "minecraft-query", 16384, nullptr, 1, nullptr) != pdPASS) fatal("Failed to create query task");
   configured = settings.configured();
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
@@ -529,8 +529,8 @@ void loop() {
   acceptResponse(now, connected);
   if (connected && !busy && (forceRefresh || now - finishedAt >= settings.refreshMs)) {
     auto* request = new (std::nothrow) ProbeJob{settings, generation};
-    if (!request) fatal("查询配置分配失败");
-    if (xQueueSend(requests, &request, 0) != pdTRUE) fatal("查询请求提交失败");
+    if (!request) fatal("Failed to allocate query settings");
+    if (xQueueSend(requests, &request, 0) != pdTRUE) fatal("Failed to submit query request");
     forceRefresh = false;
     busy = true;
     dirty = true;

@@ -29,10 +29,10 @@ class SerialLink:
                         command = self.commands.get_nowait()
                         encoded = (json.dumps(command, ensure_ascii=False) + "\n").encode("utf-8")
                         if device.write(encoded) != len(encoded):
-                            raise serial.SerialException("串口命令发送中断")
+                            raise serial.SerialException("Serial command transmission interrupted")
                     buffer.extend(device.read(4096))
                     if len(buffer) > 524288:
-                        raise serial.SerialException("设备响应超过 512 KiB")
+                        raise serial.SerialException("Device response exceeds 512 KiB")
                     while b"\n" in buffer:
                         line, _, remainder = buffer.partition(b"\n")
                         buffer = bytearray(remainder)
@@ -44,7 +44,7 @@ class SerialLink:
                             self.events.put(("log", (self, line.decode("utf-8", errors="replace"))))
                             continue
                         if not isinstance(message, dict):
-                            raise serial.SerialException("设备响应必须为 JSON 对象")
+                            raise serial.SerialException("Device response must be a JSON object")
                         self.events.put(("message", (self, message)))
         except (serial.SerialException, OSError) as error:
             self.events.put(("error", (self, str(error))))
@@ -67,8 +67,8 @@ class App:
         self.password_set = False
         self.saved_ssid = ""
         self.port = tk.StringVar()
-        self.status = tk.StringVar(value="选择 StickS3 串口")
-        self.result_summary = tk.StringVar(value="等待设备响应")
+        self.status = tk.StringVar(value="Select the StickS3 serial port")
+        self.result_summary = tk.StringVar(value="Waiting for device response")
         self.values = {
             "ssid": tk.StringVar(), "password": tk.StringVar(), "host": tk.StringVar(),
             "connect_host": tk.StringVar(), "port": tk.StringVar(value="25565"),
@@ -89,30 +89,30 @@ class App:
         connection.pack(fill="x", pady=(0, 12))
         self.port_box = ttk.Combobox(connection, textvariable=self.port, state="readonly", width=24)
         self.port_box.pack(side="left", fill="x", expand=True)
-        ttk.Button(connection, text="刷新串口", command=self.scan_ports).pack(side="left", padx=8)
-        self.connect_button = ttk.Button(connection, text="连接设备", command=self.toggle_connection)
+        ttk.Button(connection, text="Refresh ports", command=self.scan_ports).pack(side="left", padx=8)
+        self.connect_button = ttk.Button(connection, text="Connect", command=self.toggle_connection)
         self.connect_button.pack(side="left")
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
         self.form = ttk.Frame(notebook, padding=16)
-        notebook.add(self.form, text="设备配置")
+        notebook.add(self.form, text="Device settings")
         self.form.columnconfigure(1, weight=1)
-        self.field("Wi-Fi 名称", "ssid", 0)
-        self.field("密码（留空保留）", "password", 1, show="•")
-        ttk.Checkbutton(self.form, text="开放网络", variable=self.open_network).grid(row=2, column=1, sticky="w", pady=(0, 10))
-        self.field("服务器地址", "host", 3)
-        self.field("服务器端口", "port", 4)
-        self.field("屏幕方向", "rotation", 5, choices=("90°", "270°"))
-        advanced = ttk.LabelFrame(self.form, text="查询与显示", padding=12)
+        self.field("Wi-Fi SSID", "ssid", 0)
+        self.field("Password (blank to keep)", "password", 1, show="•")
+        ttk.Checkbutton(self.form, text="Open network", variable=self.open_network).grid(row=2, column=1, sticky="w", pady=(0, 10))
+        self.field("Server address", "host", 3)
+        self.field("Server port", "port", 4)
+        self.field("Screen rotation", "rotation", 5, choices=("90°", "270°"))
+        advanced = ttk.LabelFrame(self.form, text="Query and display", padding=12)
         advanced.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         advanced.columnconfigure(1, weight=1)
-        self.field("连接目标（可选）", "connect_host", 0, parent=advanced)
-        self.field("握手协议编号", "protocol", 1, parent=advanced)
-        self.field("刷新间隔（秒）", "refresh_seconds", 2, parent=advanced)
-        self.field("阶段超时（秒）", "timeout_seconds", 3, parent=advanced)
-        self.field("屏幕亮度", "brightness", 4, parent=advanced)
+        self.field("Connect host (optional)", "connect_host", 0, parent=advanced)
+        self.field("Handshake protocol", "protocol", 1, parent=advanced)
+        self.field("Refresh interval (s)", "refresh_seconds", 2, parent=advanced)
+        self.field("Stage timeout (s)", "timeout_seconds", 3, parent=advanced)
+        self.field("Brightness", "brightness", 4, parent=advanced)
         result = ttk.Frame(notebook, padding=12)
-        notebook.add(result, text="响应信息")
+        notebook.add(result, text="Server response")
         ttk.Label(result, textvariable=self.result_summary, wraplength=540).pack(anchor="w", pady=(0, 10))
         text_frame = ttk.Frame(result)
         text_frame.pack(fill="both", expand=True)
@@ -123,13 +123,13 @@ class App:
         self.raw.configure(yscrollcommand=scrollbar.set)
         actions = ttk.Frame(outer)
         actions.pack(fill="x", pady=(12, 8))
-        self.read_button = ttk.Button(actions, text="读取配置", command=lambda: self.send("get_config"))
+        self.read_button = ttk.Button(actions, text="Read settings", command=lambda: self.send("get_config"))
         self.read_button.pack(side="left")
-        self.refresh_button = ttk.Button(actions, text="立即查询", command=lambda: self.send("refresh"))
+        self.refresh_button = ttk.Button(actions, text="Query now", command=lambda: self.send("refresh"))
         self.refresh_button.pack(side="left", padx=8)
-        self.state_button = ttk.Button(actions, text="读取响应", command=lambda: self.send("get_state"))
+        self.state_button = ttk.Button(actions, text="Read response", command=lambda: self.send("get_state"))
         self.state_button.pack(side="left")
-        self.save_button = ttk.Button(actions, text="保存到设备", command=self.save)
+        self.save_button = ttk.Button(actions, text="Save to device", command=self.save)
         self.save_button.pack(side="right")
         ttk.Label(outer, textvariable=self.status, wraplength=600).pack(anchor="w")
         self.update_buttons()
@@ -144,7 +144,7 @@ class App:
         widget.grid(row=row, column=1, sticky="ew", pady=4)
 
     def scan_ports(self):
-        self.ports = {f"{port.device} · {port.description}": port.device for port in list_ports.comports()}
+        self.ports = {port.device: port.device for port in list_ports.comports()}
         names = list(self.ports)
         self.port_box["values"] = names
         if self.port.get() not in self.ports:
@@ -156,9 +156,9 @@ class App:
             return
         port = self.ports.get(self.port.get())
         if not port:
-            messagebox.showerror("串口", "请选择 StickS3 串口", parent=self.root)
+            messagebox.showerror("Serial port", "Select the StickS3 serial port", parent=self.root)
             return
-        self.status.set("正在连接设备")
+        self.status.set("Connecting to device")
         self.link = SerialLink(port, self.events)
         self.update_buttons()
 
@@ -170,7 +170,7 @@ class App:
         self.config_ready = False
         self.pending = None
         self.values["password"].set("")
-        self.status.set("设备连接已断开")
+        self.status.set("Device disconnected")
         self.update_buttons()
 
     def update_buttons(self):
@@ -178,7 +178,7 @@ class App:
         self.read_button.configure(state="normal" if ready else "disabled")
         for button in (self.refresh_button, self.state_button, self.save_button):
             button.configure(state="normal" if ready and self.config_ready else "disabled")
-        self.connect_button.configure(text="断开设备" if self.link else "连接设备")
+        self.connect_button.configure(text="Disconnect" if self.link else "Connect")
         self.port_box.configure(state="disabled" if self.link else "readonly")
 
     def send(self, command, settings=None):
@@ -196,43 +196,43 @@ class App:
         settings = {key: value.get() if key == "ssid" else value.get().strip()
                     for key, value in self.values.items() if key != "password"}
         if not 1 <= len(settings["ssid"].encode("utf-8")) <= 32:
-            raise ValueError("Wi-Fi 名称必须为 1~32 字节")
+            raise ValueError("Wi-Fi SSID must be 1-32 UTF-8 bytes")
         for key in ("host", "connect_host"):
             text = settings[key]
             if key == "connect_host" and not text:
                 continue
             if not re.fullmatch(r"[A-Za-z0-9_.-]{1,253}", text):
-                raise ValueError("服务器地址应填写 IPv4 地址或域名，端口填写在端口字段")
+                raise ValueError("Enter an IPv4 address or hostname; enter the port in Server port")
         limits = {"port": (1, 65535), "protocol": (0, 2147483647), "refresh_seconds": (10, 3600),
                   "timeout_seconds": (1, 30), "brightness": (20, 255)}
-        titles = {"port": "服务器端口", "protocol": "握手协议编号", "refresh_seconds": "刷新间隔",
-                  "timeout_seconds": "阶段超时", "brightness": "屏幕亮度"}
+        titles = {"port": "Server port", "protocol": "Handshake protocol", "refresh_seconds": "Refresh interval",
+                  "timeout_seconds": "Stage timeout", "brightness": "Brightness"}
         for key, (low, high) in limits.items():
             if not settings[key].isdecimal() or not low <= int(settings[key]) <= high:
-                raise ValueError(f"{titles[key]}必须为 {low}~{high} 的整数")
+                raise ValueError(f"{titles[key]} must be an integer from {low} to {high}")
             settings[key] = int(settings[key])
         settings["rotation"] = int(settings["rotation"].removesuffix("°"))
         if settings["rotation"] not in (90, 270):
-            raise ValueError("屏幕方向必须为 90° 或 270°")
+            raise ValueError("Screen rotation must be 90° or 270°")
         password = self.values["password"].get()
         if self.open_network.get():
             settings["password"] = ""
         elif password:
             if not 8 <= len(password.encode("utf-8")) <= 63:
-                raise ValueError("Wi-Fi 密码必须为 8~63 字节")
+                raise ValueError("Wi-Fi password must be 8-63 UTF-8 bytes")
             settings["password"] = password
         elif settings["ssid"] != self.saved_ssid:
-            raise ValueError("更换 Wi-Fi 时需要填写密码或选择开放网络")
+            raise ValueError("Enter a password or select Open network when changing the Wi-Fi SSID")
         return settings
 
     def save(self):
         try:
             settings = self.payload()
         except ValueError as error:
-            messagebox.showerror("配置", str(error), parent=self.root)
+            messagebox.showerror("Settings", str(error), parent=self.root)
             return
         self.send("configure", settings)
-        self.status.set("正在保存配置")
+        self.status.set("Saving settings")
 
     def apply_config(self, config):
         for key, variable in self.values.items():
@@ -248,32 +248,32 @@ class App:
     def handle_message(self, message):
         if message.get("type") == "reply":
             if "id" not in message:
-                self.status.set(message.get("error", "串口命令响应无效"))
+                self.status.set(message.get("error", "Invalid command response"))
                 return
             if not self.pending or message["id"] != self.pending[0]:
                 return
             command = self.pending[1]
             self.pending = None
             if not message.get("ok"):
-                self.status.set(message.get("error", "设备操作失败"))
+                self.status.set(message.get("error", "Device operation failed"))
             else:
                 if "config" in message:
                     self.apply_config(message["config"])
-                self.status.set("配置已保存到设备" if command == "configure" else "设备操作完成")
+                self.status.set("Settings saved to device" if command == "configure" else "Device operation completed")
             self.update_buttons()
         elif message.get("type") == "state":
-            state = "Wi-Fi 已连接" if message["wifi"] else "Wi-Fi 正在连接"
+            state = "Wi-Fi connected" if message["wifi"] else "Connecting to Wi-Fi"
             if not message["configured"]:
-                state = "等待设备配置"
+                state = "Waiting for device configuration"
             if message["busy"]:
-                state += " · 查询中"
+                state += " · Querying"
             result = message.get("result")
             if result:
                 self.result_summary.set(
-                    f"{result['version']}  |  {result['online']} / {result['max']} 人  |  "
+                    f"{result['version']}  |  {result['online']} / {result['max']} players  |  "
                     f"DNS {result['dns_ms']} ms · TCP {result['tcp_ms']} ms · "
-                    f"状态 {result['status_ms']} ms · Pong {result['pong_ms']} ms"
-                    if result["status_received"] else f"{result['stage']}：{result['error']}"
+                    f"Status {result['status_ms']} ms · Pong {result['pong_ms']} ms"
+                    if result["status_received"] else f"{result['stage']}: {result['error']}"
                 )
                 if result["error"]:
                     state += f" · {result['error']}"
@@ -283,7 +283,7 @@ class App:
                     self.raw.insert("1.0", result["raw_json"])
                     self.raw.configure(state="disabled")
             else:
-                self.result_summary.set("等待设备响应")
+                self.result_summary.set("Waiting for device response")
                 self.raw.configure(state="normal")
                 self.raw.delete("1.0", "end")
                 self.raw.configure(state="disabled")
@@ -297,16 +297,16 @@ class App:
                 continue
             if kind == "connected":
                 self.connected = True
-                self.status.set("设备已连接")
+                self.status.set("Device connected")
                 self.send("get_config")
             elif kind == "message":
                 try:
                     self.handle_message(value[1])
                 except (KeyError, TypeError, ValueError) as error:
                     self.disconnect()
-                    self.status.set(f"设备响应格式无效：{error}")
+                    self.status.set(f"Invalid device response: {error}")
             elif kind == "log":
-                self.status.set("设备输出：" + value[1][:160])
+                self.status.set("Device output: " + value[1][:160])
             elif kind == "error":
                 self.disconnect()
                 self.status.set(value[1])
@@ -314,7 +314,7 @@ class App:
                 self.disconnect()
         if self.pending and time.monotonic() > self.pending[2]:
             self.pending = None
-            self.status.set("设备响应超时，请检查固件和 USB 连接")
+            self.status.set("Device response timed out. Check the firmware and USB connection.")
             self.update_buttons()
         self.root.after(50, self.poll)
 

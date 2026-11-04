@@ -177,7 +177,7 @@ bool statusJson(Result& result) {
   if (error) { result.error = std::string("JSON: ") + error.c_str(); return false; }
   if (!json.is<JsonObject>() || !json["version"]["name"].is<const char*>() ||
       !json["version"]["protocol"].is<int32_t>() || json["description"].isNull()) {
-    result.error = "服务器状态字段无效";
+    result.error = "Invalid server status fields";
     return false;
   }
   result.version = json["version"]["name"].as<const char*>();
@@ -185,7 +185,7 @@ bool statusJson(Result& result) {
   if (!json["players"].isNull()) {
     if (!json["players"]["online"].is<int32_t>() || !json["players"]["max"].is<int32_t>() ||
         json["players"]["online"].as<int32_t>() < 0 || json["players"]["max"].as<int32_t>() < 0) {
-      result.error = "服务器人数无效";
+      result.error = "Invalid player counts";
       return false;
     }
     result.online = json["players"]["online"].as<int32_t>();
@@ -193,7 +193,7 @@ bool statusJson(Result& result) {
   }
   Motd motd(result);
   if (!motd.component(json["description"])) {
-    result.error = "MOTD 类型或长度超出支持范围";
+    result.error = "Unsupported MOTD type or size";
     return false;
   }
   return true;
@@ -203,14 +203,14 @@ bool statusJson(Result& result) {
 
 const char* stageName(Stage stage) {
   switch (stage) {
-    case Stage::Config: return "配置";
+    case Stage::Config: return "Settings";
     case Stage::Dns: return "DNS";
     case Stage::Tcp: return "TCP";
-    case Stage::Status: return "状态响应";
+    case Stage::Status: return "Status";
     case Stage::Pong: return "Ping/Pong";
-    case Stage::Done: return "完成";
+    case Stage::Done: return "Done";
   }
-  return "未知";
+  return "Unknown";
 }
 
 Result query(Transport& io, const char* serverHost, const char* connectHost,
@@ -219,16 +219,16 @@ Result query(Transport& io, const char* serverHost, const char* connectHost,
   struct Close { Transport& io; ~Close() { io.close(); } } close{io};
   if (!serverHost || !connectHost || !*serverHost || !*connectHost ||
       std::strlen(serverHost) > 255 || !port || protocol < 0 || timeoutMs == 0) {
-    result.error = "服务器配置无效";
+    result.error = "Invalid server settings";
     return result;
   }
   result.stage = Stage::Dns;
   uint32_t start = io.nowMs();
-  if (!io.resolve(connectHost, result.address)) { result.error = "域名解析失败"; return result; }
+  if (!io.resolve(connectHost, result.address)) { result.error = "DNS lookup failed"; return result; }
   result.dnsMs = io.nowMs() - start;
   result.stage = Stage::Tcp;
   start = io.nowMs();
-  if (!io.connect(port, timeoutMs)) { result.error = "连接失败或超时"; return result; }
+  if (!io.connect(port, timeoutMs)) { result.error = "Connection failed or timed out"; return result; }
   result.tcpMs = io.nowMs() - start;
   result.stage = Stage::Status;
   start = io.nowMs();
@@ -242,7 +242,7 @@ Result query(Transport& io, const char* serverHost, const char* connectHost,
   handshake.push_back(port & 0xFF);
   handshake.push_back(1);
   if (!exchange.frame(handshake) || !exchange.frame({0})) {
-    result.error = "状态请求发送失败"; return result;
+    result.error = "Failed to send status request"; return result;
   }
   uint32_t packetLength, packetId, stringLength;
   size_t prefixSize, idSize, stringSize;
@@ -250,11 +250,11 @@ Result query(Transport& io, const char* serverHost, const char* connectHost,
       !exchange.integer(packetId, idSize) || packetId != 0 ||
       !exchange.integer(stringLength, stringSize) || stringLength == 0 ||
       stringLength > kMaxPacket || idSize + stringSize + stringLength != packetLength) {
-    result.error = "状态响应包无效或超时"; return result;
+    result.error = "Invalid status packet or timeout"; return result;
   }
   result.rawJson.resize(stringLength);
   if (!exchange.read(reinterpret_cast<uint8_t*>(&result.rawJson[0]), stringLength)) {
-    result.error = "状态响应中断或超时"; return result;
+    result.error = "Status response interrupted or timed out"; return result;
   }
   result.statusMs = io.nowMs() - start;
   if (!statusJson(result)) return result;
@@ -266,12 +266,12 @@ Result query(Transport& io, const char* serverHost, const char* connectHost,
   const uint64_t nonce = (uint64_t(io.nowMs()) << 32) | 0x4D354D43;
   for (int shift = 56; shift >= 0; shift -= 8) payload.push_back(static_cast<uint8_t>(nonce >> shift));
   start = io.nowMs();
-  if (!ping.frame(payload)) { result.error = "Ping 发送失败"; return result; }
+  if (!ping.frame(payload)) { result.error = "Failed to send Ping"; return result; }
   std::array<uint8_t, 8> echo;
   if (!ping.integer(packetLength, prefixSize) || packetLength != 9 ||
       !ping.integer(packetId, idSize) || packetId != 1 || idSize != 1 ||
       !ping.read(echo.data(), echo.size()) || std::memcmp(echo.data(), payload.data() + 1, 8)) {
-    result.error = "Pong 响应无效、中断或超时"; return result;
+    result.error = "Invalid Pong, disconnect or timeout"; return result;
   }
   result.pongMs = io.nowMs() - start;
   result.stage = Stage::Done;
