@@ -15,9 +15,12 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include <cstring>
+#include <cctype>
+#include <esp_sntp.h>
 #include <memory>
 #include <new>
 #include <string>
+#include <sys/time.h>
 #include <time.h>
 #include "alert.h"
 #include "certs.h"
@@ -30,7 +33,11 @@
 #define BALANCE_PATH "/user/balance"
 #define BALANCE_INTERVAL_MS (5UL * 60UL * 1000UL)  // 非高峰默认刷新周期 5 分钟
 #define PEAK_QUERY_INTERVAL_MS 15000UL             // 高峰 RWR 监控周期 15 秒（ADR-0004）
-#define NTP_RESYNC_MS (6UL * 3600UL * 1000UL)      // NTP 每 6 小时重同步
+#define NTP_FAST_RETRY_MS 4000UL                   // 首轮快速轮询备用源间隔 4 秒
+#define NTP_SLOW_RETRY_MS 30000UL                  // 仍未同步时的退避重试周期 30 秒
+#define NTP_UPGRADE_RETRY_MS 60000UL               // HTTP Date 已兜底后等待精确 NTP 的间隔 60 秒
+#define NTP_SLEEP_BOOST_MS 15000UL                 // 连网后最多关闭 Wi-Fi 省电 15 秒以加速首包
+#define NTP_RESYNC_MS (6UL * 3600UL * 1000UL)      // NTP 精确同步后每 6 小时重同步
 #define STATE_INTERVAL_MS (60UL * 1000UL)          // 状态上报周期 60 秒
 #define SERIAL_BUF 512
 
@@ -49,7 +56,14 @@ Preferences prefs;
 liangzi::LiangziUi ui;
 liangzi::BalanceHistory balanceHistory;
 
-bool timeSynced = false;
+bool timeSynced = false;           // 时间是否已可用（SNTP 或 HTTP Date 兜底）
+bool ntpExactSynced = false;       // 是否已完成精确 SNTP 同步
+bool wifiWasConnected = false;     // 上一帧 Wi-Fi 连接态（检测上升沿）
+bool wifiSleepDisabled = false;    // 是否处于首同步低延迟模式
+uint8_t ntpRetryCount = 0;         // 本轮未同步重试计数（用于轮转 3 台 NTP 服务器）
+unsigned long wifiConnectedAt = 0; // 最近一次进入 WL_CONNECTED 的时间
+volatile bool ntpCallbackFired = false;  // lwIP SNTP 回调触发标记（跨线程安全）
+static char ntpPrimaryBuf[64] = DEFAULT_NTP;
 bool dirty = true;
 uint32_t dataRevision = 1;
 
@@ -185,17 +199,73 @@ static int hhmmToMin(const char *s) {
 
 void applyRotation(uint8_t rot);
 
+static bool eqIgnoreCase(const char *a, const char *b) {
+  while (*a && *b) {
+    if (std::tolower(static_cast<unsigned char>(*a)) !=
+        std::tolower(static_cast<unsigned char>(*b))) {
+      return false;
+    }
+    ++a;
+    ++b;
+  }
+  return *a == *b;
+}
+
+static void onNtpTimeSync(struct timeval * /*tv*/) {
+  ntpCallbackFired = true;
+}
+
+static void setWifiLowLatency(bool enable) {
+  if (wifiSleepDisabled == enable) return;
+  WiFi.setSleep(!enable);
+  wifiSleepDisabled = enable;
+}
+
+static void startNtpSync(uint32_t nowMs, uint8_t rotateIdx) {
+  const char *primary = (cfg.ntp.length() > 0) ? cfg.ntp.c_str() : DEFAULT_NTP;
+  std::snprintf(ntpPrimaryBuf, sizeof(ntpPrimaryBuf), "%s", primary);
+
+  static const char *const kFallbackNtp[] = {
+      "ntp.aliyun.com", "ntp.tencent.com", "cn.pool.ntp.org"};
+  const char *pool[3] = {ntpPrimaryBuf, nullptr, nullptr};
+  uint8_t count = 1;
+  for (const char *cand : kFallbackNtp) {
+    if (count >= 3) break;
+    bool dup = false;
+    for (uint8_t i = 0; i < count; ++i) {
+      if (eqIgnoreCase(pool[i], cand)) {
+        dup = true;
+        break;
+      }
+    }
+    if (!dup) pool[count++] = cand;
+  }
+
+  const uint8_t shift = rotateIdx % count;
+  configTime(8 * 3600, 0,
+             pool[shift], pool[(shift + 1u) % count], pool[(shift + 2u) % count]);
+  lastNtpAttempt = nowMs;
+}
+
 void applyConfig() {
   WiFi.disconnect();
+  if (esp_sntp_enabled()) {
+    esp_sntp_stop();
+  }
   if (cfg.hasWifi()) {
     WiFi.mode(WIFI_STA);
+    setWifiLowLatency(true);
     WiFi.begin(cfg.ssid.c_str(), cfg.password.length() ? cfg.password.c_str() : NULL);
   } else {
     WiFi.mode(WIFI_OFF);
+    wifiSleepDisabled = false;
   }
   lastWifiAttempt = millis();
-  configTime(8 * 3600, 0, cfg.ntp.c_str());
-  lastNtpAttempt = millis();
+  lastNtpAttempt = 0;
+  wifiWasConnected = false;
+  ntpExactSynced = false;
+  ntpRetryCount = 0;
+  ntpCallbackFired = false;
 
   // 使旧配置期间的在途 Core 0 余额查询失效并立即重查
   ++balanceGen;
@@ -345,12 +415,57 @@ void manageWiFi() {
   }
 }
 
-void manageNtp() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  unsigned long interval = timeSynced ? NTP_RESYNC_MS : 30000UL;
-  if (millis() - lastNtpAttempt > interval) {
-    lastNtpAttempt = millis();
-    configTime(8 * 3600, 0, cfg.ntp.c_str());
+void manageNtp(uint32_t now) {
+  if (ntpCallbackFired) {
+    ntpCallbackFired = false;
+    ntpExactSynced = true;
+    timeSynced = true;
+    ntpRetryCount = 0;
+    lastNtpAttempt = now;
+    setWifiLowLatency(false);
+    dirty = true;
+  }
+
+  const bool wifiNow = (WiFi.status() == WL_CONNECTED);
+  if (!wifiNow) {
+    wifiWasConnected = false;
+    return;
+  }
+
+  const bool justConnected = !wifiWasConnected;
+  if (justConnected) {
+    wifiWasConnected = true;
+    wifiConnectedAt = now;
+    dirty = true;
+    if (!ntpExactSynced) {
+      setWifiLowLatency(true);
+      ntpRetryCount = 1;
+      startNtpSync(now, 0);
+      return;
+    }
+  }
+
+  if (wifiSleepDisabled && (ntpExactSynced || (now - wifiConnectedAt >= NTP_SLEEP_BOOST_MS))) {
+    setWifiLowLatency(false);
+  }
+
+  if (ntpExactSynced) {
+    if (now - lastNtpAttempt >= NTP_RESYNC_MS) {
+      startNtpSync(now, 0);
+    }
+    return;
+  }
+
+  unsigned long retryInterval = NTP_SLOW_RETRY_MS;
+  if (ntpRetryCount < 3) {
+    retryInterval = NTP_FAST_RETRY_MS;
+  } else if (timeSynced) {
+    retryInterval = NTP_UPGRADE_RETRY_MS;
+  }
+  if (now - lastNtpAttempt >= retryInterval) {
+    const uint8_t slot = ntpRetryCount % 3u;
+    if (ntpRetryCount < 255) ++ntpRetryCount;
+    startNtpSync(now, slot);
   }
 }
 
@@ -368,6 +483,15 @@ void acceptBalanceResponse(uint32_t nowMs) {
   if (xQueueReceive(balanceRespQ, &rawResp, 0) != pdTRUE) return;
   std::unique_ptr<BalanceResponse> resp(rawResp);
   balanceBusy = false;
+
+  if (resp->parsed.hasServerDate && !timeSynced && !ntpExactSynced) {
+    struct timeval tv{};
+    tv.tv_sec = static_cast<time_t>(resp->parsed.serverEpochSec);
+    tv.tv_usec = 0;
+    settimeofday(&tv, nullptr);
+    timeSynced = true;
+    dirty = true;
+  }
 
   if (balanceDiscard || resp->generation != balanceGen) {
     balanceDiscard = false;
@@ -653,14 +777,21 @@ void setup() {
     xTaskCreatePinnedToCore(balanceTask, "lz-balance", 12288, nullptr, 1, nullptr, 0);
   }
 
+  setenv("TZ", "CST-8", 1);
+  tzset();
+  esp_sntp_set_sync_mode(SNTP_SYNC_MODE_IMMED);
+  esp_sntp_set_time_sync_notification_cb(onNtpTimeSync);
+
   if (cfg.hasWifi()) {
     WiFi.mode(WIFI_STA);
+    setWifiLowLatency(true);
     WiFi.begin(cfg.ssid.c_str(), cfg.password.length() ? cfg.password.c_str() : NULL);
   } else {
     WiFi.mode(WIFI_OFF);
+    wifiSleepDisabled = false;
   }
-  configTime(8 * 3600, 0, cfg.ntp.c_str());
-  lastWifiAttempt = lastNtpAttempt = millis();
+  lastWifiAttempt = millis();
+  lastNtpAttempt = 0;
 
   sendHello();
 }
@@ -672,7 +803,7 @@ void loop() {
   handleKeys(now);
   pumpSerial();
   manageWiFi();
-  manageNtp();
+  manageNtp(now);
   acceptBalanceResponse(now);
   scheduleBalanceRequest(now);
   manageRotation();

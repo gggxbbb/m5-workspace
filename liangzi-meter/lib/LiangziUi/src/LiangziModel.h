@@ -107,6 +107,7 @@ struct BeijingDateTime {
 
 void epochToBeijingDateTime(int64_t epochSec, BeijingDateTime& out);
 int64_t beijingDateTimeToEpoch(int year, int month, int day, int hour, int minute, int second);
+bool parseHttpDateHeader(const char* headers, size_t len, int64_t& outEpochSec);
 
 bool inPeakWindow(const PeakSchedule& sched, int year, int month, int day, int wday,
                   int minuteOfDay);
@@ -123,6 +124,8 @@ struct BalanceParseResult {
   double grantedBalance = 0.0;
   double toppedUpBalance = 0.0;
   bool hasSplit = false;
+  bool hasServerDate = false;
+  int64_t serverEpochSec = 0;
 };
 
 bool parseDeepSeekBalanceJson(const char* json, size_t len, BalanceParseResult& out);

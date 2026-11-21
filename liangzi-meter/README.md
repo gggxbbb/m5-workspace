@@ -90,6 +90,6 @@ JSON Lines @ 115200，见 [docs/adr/0002-jsonl-serial-protocol.md](docs/adr/0002
 
 ## 已知限制
 
-- 设备无独立 RTC，断电重启后依赖 NTP 重新同步（开机自动同步，已同步后每 6 小时重同步）。
+- 设备无独立 RTC，断电重启后时间归零：Wi-Fi 连上瞬间即时触发 3 源 NTP 轮询（用户配置源 + 备用国内源，首同步前关闭 Wi-Fi 省电最多 15 秒，支持 SNTP 回调立即刷新），并复用 DeepSeek HTTPS 响应头 `Date` 作秒级兜底，精确 NTP 同步后每 6 小时重同步。
 - API Key 以明文存储于设备 NVS 与 `host/config.json`（本地 USB 场景，风险可接受，见 ADR-0001）。
 - TLS 根证书（DigiCert Global Root G2）内嵌固件，证书轮换需重刷。

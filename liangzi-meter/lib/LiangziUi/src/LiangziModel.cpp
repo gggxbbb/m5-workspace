@@ -87,6 +87,125 @@ bool decodeChunkedBody(const char* data, size_t len, std::string& decoded) {
   return !decoded.empty();
 }
 
+int parseMonthAbbr(const char* s) {
+  static const char* const kMonths[12] = {"jan", "feb", "mar", "apr", "may", "jun",
+                                          "jul", "aug", "sep", "oct", "nov", "dec"};
+  char buf[3];
+  for (int i = 0; i < 3; ++i) {
+    buf[i] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[i])));
+  }
+  for (int m = 0; m < 12; ++m) {
+    if (buf[0] == kMonths[m][0] && buf[1] == kMonths[m][1] && buf[2] == kMonths[m][2]) {
+      return m + 1;
+    }
+  }
+  return 0;
+}
+
+int daysInMonth(int y, int m) {
+  static const int kDays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if (m < 1 || m > 12) return 0;
+  if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0))) return 29;
+  return kDays[m - 1];
+}
+
+bool parseUintDigits(const char*& p, const char* end, int minDigits, int maxDigits, int& out) {
+  int val = 0;
+  int count = 0;
+  while (p < end && count < maxDigits &&
+         std::isdigit(static_cast<unsigned char>(*p))) {
+    val = val * 10 + (*p - '0');
+    ++p;
+    ++count;
+  }
+  if (count < minDigits) return false;
+  out = val;
+  return true;
+}
+
+bool matchAsciiCaseInsensitive(const char* p, const char* lit, size_t len) {
+  for (size_t i = 0; i < len; ++i) {
+    if (std::tolower(static_cast<unsigned char>(p[i])) !=
+        std::tolower(static_cast<unsigned char>(lit[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void skipHorizSpace(const char*& p, const char* end) {
+  while (p < end && (*p == ' ' || *p == '\t')) ++p;
+}
+
+bool parseImfFixdate(const char* p, const char* end, int64_t& outEpochSec) {
+  skipHorizSpace(p, end);
+  const char* comma = nullptr;
+  for (const char* q = p; q < end; ++q) {
+    if (*q == ',') {
+      comma = q;
+      break;
+    }
+  }
+  if (!comma) return false;
+  p = comma + 1;
+  skipHorizSpace(p, end);
+
+  int day = 0;
+  if (!parseUintDigits(p, end, 1, 2, day)) return false;
+  if (p >= end || (*p != ' ' && *p != '\t')) return false;
+  skipHorizSpace(p, end);
+
+  if (end - p < 3) return false;
+  const int month = parseMonthAbbr(p);
+  if (month == 0) return false;
+  p += 3;
+  if (p >= end || (*p != ' ' && *p != '\t')) return false;
+  skipHorizSpace(p, end);
+
+  int year = 0;
+  if (!parseUintDigits(p, end, 4, 4, year)) return false;
+  if (year < 2020 || year > 2099) return false;
+  if (p >= end || (*p != ' ' && *p != '\t')) return false;
+  skipHorizSpace(p, end);
+
+  int hour = 0;
+  int minute = 0;
+  int second = 0;
+  if (!parseUintDigits(p, end, 2, 2, hour)) return false;
+  if (p >= end || *p != ':') return false;
+  ++p;
+  if (!parseUintDigits(p, end, 2, 2, minute)) return false;
+  if (p >= end || *p != ':') return false;
+  ++p;
+  if (!parseUintDigits(p, end, 2, 2, second)) return false;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 60) {
+    return false;
+  }
+  if (second == 60) second = 59;
+
+  if (p >= end || (*p != ' ' && *p != '\t')) return false;
+  skipHorizSpace(p, end);
+
+  if (end - p < 3) return false;
+  if (!matchAsciiCaseInsensitive(p, "gmt", 3) &&
+      !matchAsciiCaseInsensitive(p, "utc", 3)) {
+    return false;
+  }
+  p += 3;
+  skipHorizSpace(p, end);
+  if (p != end) return false;
+
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+
+  const int64_t epoch = daysFromCivil(year, month, day) * 86400LL +
+                        static_cast<int64_t>(hour) * 3600LL +
+                        static_cast<int64_t>(minute) * 60LL +
+                        static_cast<int64_t>(second);
+  if (epoch <= 1600000000LL) return false;
+  outEpochSec = epoch;
+  return true;
+}
+
 }  // namespace
 
 void epochToBeijingDateTime(int64_t epochSec, BeijingDateTime& out) {
@@ -119,6 +238,28 @@ void epochToBeijingDateTime(int64_t epochSec, BeijingDateTime& out) {
 int64_t beijingDateTimeToEpoch(int year, int month, int day, int hour, int minute, int second) {
   const int64_t days = daysFromCivil(year, month, day);
   return days * 86400LL + hour * 3600LL + minute * 60LL + second - 8LL * 3600LL;
+}
+
+bool parseHttpDateHeader(const char* headers, size_t len, int64_t& outEpochSec) {
+  if (!headers || len == 0) return false;
+  size_t pos = 0;
+  while (pos < len) {
+    size_t lineEnd = pos;
+    while (lineEnd < len && headers[lineEnd] != '\n') ++lineEnd;
+    size_t trimEnd = lineEnd;
+    if (trimEnd > pos && headers[trimEnd - 1] == '\r') --trimEnd;
+
+    const size_t lineLen = trimEnd - pos;
+    if (lineLen >= 5 && matchAsciiCaseInsensitive(headers + pos, "date:", 5)) {
+      int64_t epoch = 0;
+      if (parseImfFixdate(headers + pos + 5, headers + trimEnd, epoch)) {
+        outEpochSec = epoch;
+        return true;
+      }
+    }
+    pos = (lineEnd < len) ? (lineEnd + 1) : len;
+  }
+  return false;
 }
 
 bool inPeakWindow(const PeakSchedule& sched, int year, int month, int day, int wday,
@@ -184,8 +325,12 @@ int64_t secondsToNextSwitch(const PeakSchedule& sched, int64_t nowEpoch) {
 
 bool parseDeepSeekBalanceJson(const char* json, size_t len, BalanceParseResult& out) {
   const int savedStatus = out.httpStatus;
+  const bool savedHasDate = out.hasServerDate;
+  const int64_t savedEpoch = out.serverEpochSec;
   out = BalanceParseResult{};
   out.httpStatus = savedStatus;
+  out.hasServerDate = savedHasDate;
+  out.serverEpochSec = savedEpoch;
   if (!json || len == 0) return false;
 
   JsonDocument doc;
@@ -244,6 +389,11 @@ bool parseDeepSeekBalanceHttp(const char* raw, size_t len, BalanceParseResult& o
   const size_t sp = headers.find(' ');
   if (sp != std::string::npos) {
     out.httpStatus = std::atoi(headers.c_str() + sp + 1);
+  }
+  int64_t serverEpoch = 0;
+  if (parseHttpDateHeader(headers.data(), headers.size(), serverEpoch)) {
+    out.hasServerDate = true;
+    out.serverEpochSec = serverEpoch;
   }
   if (out.httpStatus != 200) return false;
 

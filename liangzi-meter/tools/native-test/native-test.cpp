@@ -186,6 +186,98 @@ void testHistoryAndRwr() {
   CHECK(liangzi::evaluateRwrBalanceUpdate(false, true, 99.98, 99.50) == liangzi::RwrAction::kStopMissile);
 }
 
+void testHttpDateParsing() {
+  // 1. Standard IMF-fixdate (UTC 09:57:21 == Beijing 17:57:21)
+  {
+    const char* hdr = "HTTP/1.1 200 OK\r\nDate: Sat, 21 Nov 2026 09:57:21 GMT\r\n";
+    int64_t ep = 0;
+    CHECK(liangzi::parseHttpDateHeader(hdr, std::strlen(hdr), ep));
+    CHECK(ep == liangzi::beijingDateTimeToEpoch(2026, 11, 21, 17, 57, 21));
+  }
+
+  // 2. Lowercase header name, LF-only line endings, single-digit day
+  {
+    const char* hdr = "http/1.1 200 ok\ndate:   Fri, 1 Jan 2027 00:00:05 GMT\n";
+    int64_t ep = 0;
+    CHECK(liangzi::parseHttpDateHeader(hdr, std::strlen(hdr), ep));
+    CHECK(ep == liangzi::beijingDateTimeToEpoch(2027, 1, 1, 8, 0, 5));
+  }
+
+  // 3. Must NOT match unrelated *-Date headers
+  {
+    const char* hdr =
+        "HTTP/1.1 200 OK\r\n"
+        "X-Custom-Date: Sat, 21 Nov 2026 09:57:21 GMT\r\n"
+        "Last-Modified: Sat, 21 Nov 2026 09:57:21 GMT\r\n";
+    int64_t ep = 0;
+    CHECK(!liangzi::parseHttpDateHeader(hdr, std::strlen(hdr), ep));
+  }
+
+  // 4. Leap-year boundary, invalid timezone, and leap second clamp
+  {
+    int64_t ep = 0;
+    const char* leapOk = "Date: Tue, 29 Feb 2028 12:00:00 GMT\r\n";
+    CHECK(liangzi::parseHttpDateHeader(leapOk, std::strlen(leapOk), ep));
+    CHECK(ep == liangzi::beijingDateTimeToEpoch(2028, 2, 29, 20, 0, 0));
+
+    const char* leapBad = "Date: Sun, 29 Feb 2026 12:00:00 GMT\r\n";
+    CHECK(!liangzi::parseHttpDateHeader(leapBad, std::strlen(leapBad), ep));
+
+    const char* badTz = "Date: Sat, 21 Nov 2026 09:57:21 EST\r\n";
+    CHECK(!liangzi::parseHttpDateHeader(badTz, std::strlen(badTz), ep));
+
+    const char* leapSec = "Date: Thu, 31 Dec 2026 23:59:60 GMT\r\n";
+    CHECK(liangzi::parseHttpDateHeader(leapSec, std::strlen(leapSec), ep));
+    CHECK(ep == liangzi::beijingDateTimeToEpoch(2027, 1, 1, 7, 59, 59));
+  }
+
+  // 5. Integration with parseDeepSeekBalanceHttp across 200 / chunked 200 / 504 / missing Date
+  const int64_t expectedEp = liangzi::beijingDateTimeToEpoch(2026, 11, 21, 17, 57, 21);
+  {
+    const char* raw =
+        "HTTP/1.1 200 OK\r\n"
+        "Date: Sat, 21 Nov 2026 09:57:21 GMT\r\n"
+        "Content-Type: application/json\r\n\r\n"
+        "{\"is_available\":true,\"balance_infos\":[{\"currency\":\"CNY\",\"total_balance\":\"50.00\"}]}";
+    liangzi::BalanceParseResult res;
+    CHECK(liangzi::parseDeepSeekBalanceHttp(raw, std::strlen(raw), res));
+    CHECK(res.hasServerDate && res.serverEpochSec == expectedEp);
+  }
+
+  {
+    const char* body =
+        "{\"is_available\":true,\"balance_infos\":[{\"currency\":\"CNY\",\"total_balance\":\"50.00\"}]}";
+    char raw[512];
+    std::snprintf(raw, sizeof(raw),
+                  "HTTP/1.1 200 OK\r\nDate: Sat, 21 Nov 2026 09:57:21 GMT\r\n"
+                  "Transfer-Encoding: chunked\r\n\r\n%zx\r\n%s\r\n0\r\n\r\n",
+                  std::strlen(body), body);
+    liangzi::BalanceParseResult res;
+    CHECK(liangzi::parseDeepSeekBalanceHttp(raw, std::strlen(raw), res));
+    CHECK(res.hasServerDate && res.serverEpochSec == expectedEp);
+  }
+
+  {
+    const char* raw =
+        "HTTP/1.1 504 Gateway Timeout\r\n"
+        "Date: Sat, 21 Nov 2026 09:57:21 GMT\r\n"
+        "Content-Length: 0\r\n\r\n";
+    liangzi::BalanceParseResult res;
+    CHECK(!liangzi::parseDeepSeekBalanceHttp(raw, std::strlen(raw), res));
+    CHECK(res.httpStatus == 504 && res.hasServerDate && res.serverEpochSec == expectedEp);
+  }
+
+  {
+    const char* raw =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n\r\n"
+        "{\"is_available\":true,\"balance_infos\":[{\"currency\":\"CNY\",\"total_balance\":\"50.00\"}]}";
+    liangzi::BalanceParseResult res;
+    CHECK(liangzi::parseDeepSeekBalanceHttp(raw, std::strlen(raw), res));
+    CHECK(!res.hasServerDate && res.serverEpochSec == 0);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -193,6 +285,7 @@ int main() {
   testHolidaysAndSchedule();
   testBalanceParsing();
   testHistoryAndRwr();
+  testHttpDateParsing();
   std::printf("PASS: LiangziModel native-test (%d assertions)\n", gChecks);
   return 0;
 }
