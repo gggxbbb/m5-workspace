@@ -139,7 +139,7 @@ void MotdUi::setPage(int page, uint32_t nowMs) {
   const int clamped = ((page % kPageCount) + kPageCount) % kPageCount;
   if (clamped == page_) return;
   page_ = clamped;
-  pageScroll_.setTarget(static_cast<float>(page_));
+  pageScroll_.start(pageScroll_.value(), static_cast<float>(page_), nowMs, 200);
   if (page_ == 2) {
     waterfallReveal_.start(0.08f, 1.0f, nowMs, 340);
   }
@@ -253,8 +253,7 @@ void MotdUi::updateIconCache(const UiModel& model) {
   // Subtle 1px inner-rounded border on iconCanvas_
   iconCanvas_.drawRoundRect(0, 0, kIconSize, kIconSize, r, to565(mixRgb(accentColor_, kCardBorder, 0.55f)));
 
-  iconScale_.snap(0.84f);
-  iconScale_.setTarget(1.0f);
+  iconScale_.start(0.88f, 1.0f, lastStepMs_, 220);
   motdPageIdx_ = 0;
   motdPageSwitchMs_ = lastStepMs_;
   motdScrollY_.snap(0.0f);
@@ -742,7 +741,7 @@ void MotdUi::drawPage0(int ox, const UiModel& model, uint32_t nowMs) {
     }
     if (numPages > 1 && nowMs - motdPageSwitchMs_ >= 6500u) {
       motdPageIdx_ = (motdPageIdx_ + 1) % numPages;
-      motdScrollY_.setTarget(static_cast<float>(motdPageIdx_ * 38));
+      motdScrollY_.start(motdScrollY_.value(), static_cast<float>(motdPageIdx_ * 38), nowMs, 240);
       motdPageSwitchMs_ = nowMs;
     }
 
@@ -1094,13 +1093,12 @@ void MotdUi::drawHoldOverlay(float progress) {
 }
 
 void MotdUi::render(const UiModel& model, uint32_t nowMs, bool pushToTarget) {
-  const float dt = lastStepMs_ ? static_cast<float>(nowMs - lastStepMs_) / 1000.0f : 0.016f;
   lastStepMs_ = nowMs;
 
   updateIconCache(model);
-  pageScroll_.step(dt);
-  motdScrollY_.step(dt);
-  iconScale_.step(dt);
+  pageScroll_.update(nowMs);
+  motdScrollY_.update(nowMs);
+  iconScale_.update(nowMs);
   waterfallReveal_.update(nowMs);
 
   canvas_.fillSprite(to565(kBgBase));

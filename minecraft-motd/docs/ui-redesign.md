@@ -209,7 +209,7 @@ y=49..118 ┌──────────────────────�
 保留并增强既有物理按键定义（不改变习惯）：
 
 - **短按 A 键**：触发手动刷新 / Wi-Fi 重连，同时在顶栏触发一次 `kDiamond` 脉冲闪光，立刻给予按压确认感。
-- **短按 B 键**：在 `Page 0 (Card) → Page 1 (Trend) → Page 2 (Waterfall)` 之间弹性横滑切换。
+- **短按 B 键**：在 `Page 0 (Card) → Page 1 (Trend) → Page 2 (Waterfall)` 之间无回弹平滑横滑切换。
 - **长按 B 键（700 ms）**：按住超过 150 ms 后在右下角/屏幕中央半透明浮层弹出 **抗锯齿圆环蓄力条（`fillArc`）+ `FLIP 180°`**，进度条填满 700 ms 瞬间完成 `90° ↔ 270°` 旋转并写入 NVS，松手未满则平滑回弹消失。
 
 ---
@@ -220,11 +220,11 @@ y=49..118 ┌──────────────────────�
 
 | 动画对象 | 类型 | 推荐配置 | 效果 |
 |---|---|---|---|
-| 页面横向切换 `pageScrollX` | `Spring` | `visualDuration = 0.28f, bounce = 0.15f` | 干脆略带回弹的推拉切页 |
-| 底部页码指示胶囊宽/位置 | `Spring` | `visualDuration = 0.24f, bounce = 0.25f` | 灵动的药丸形变 |
-| MOTD 垂直翻页偏移 | `Spring` | `visualDuration = 0.35f, bounce = 0.10f` | 顺滑上推下入 |
+| 页面横向切换 `pageScrollX` | `Easing` | `ease_out_cubic`, `200 ms` | 无回弹干脆顺滑推拉切页 |
+| 底部页码指示胶囊宽/位置 | `Easing` | 随 `pageScrollX` 同步线性插值 | 平滑过渡，不过冲 |
+| MOTD 垂直翻页偏移 | `Easing` | `ease_out_cubic`, `240 ms` | 无回弹顺滑上推下入 |
 | 瀑布条分段 / 人数进度条 | `Easing` | `ease_out_cubic`, `300 ms` | 新数据到达时线性填充展开 |
-| Favicon 到场缩放 pop | `Spring` | `visualDuration = 0.30f, bounce = 0.30f` | 轻微 Q 弹点亮名片 |
+| Favicon 到场缩放 | `Easing` | `ease_out_cubic`, `220 ms` | 轻柔渐变到位，无回弹 |
 | 长按 B 键蓄力环 | 实时进度 + `Easing` 回退 | `0 → 360°`（150..700 ms） | 明确告知“再按一会即翻转” |
 
 ### 6.2 自适应帧率策略（兼顾 40fps 丝滑感与 250 mAh 续航）

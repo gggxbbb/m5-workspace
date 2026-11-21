@@ -35,11 +35,15 @@ class SpringValue {
 
   bool step(float dtSec) {
     if (!isMoving()) return false;
-    const float dt = std::min(std::max(dtSec, 0.001f), 0.04f);
-    const float force = (target_ - value_) * stiffness_;
-    const float accel = force - velocity_ * damping_;
-    velocity_ += accel * dt;
-    value_ += velocity_ * dt;
+    float rem = std::min(std::max(dtSec, 0.001f), 0.05f);
+    while (rem > 0.0f) {
+      const float dt = std::min(rem, 0.008f);
+      const float force = (target_ - value_) * stiffness_;
+      const float accel = force - velocity_ * damping_;
+      velocity_ += accel * dt;
+      value_ += velocity_ * dt;
+      rem -= dt;
+    }
     if (std::fabs(target_ - value_) < 0.002f && std::fabs(velocity_) < 0.01f) {
       value_ = target_;
       velocity_ = 0.0f;

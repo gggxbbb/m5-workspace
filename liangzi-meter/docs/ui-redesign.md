@@ -254,7 +254,7 @@ flowchart LR
 - **短按 `KEY1`（A 键）**：
   - 不清空当前有效余额；立即触发 `ui.triggerPulse(now)`，顶栏 2px 青色光柱快速脉动一次，并向 Core 0 投递立即查询请求。
 - **短按 `KEY2`（B 键）**：
-  - 在 `Page 0 (主仪表) → Page 1 (趋势) → Page 2 (排班与诊断) → Page 0` 之间触发弹簧横滑切页。
+  - 在 `Page 0 (主仪表) → Page 1 (趋势) → Page 2 (排班与诊断) → Page 0` 之间触发无回弹单调平滑滑入切换（`easeOutCubic`, `200 ms`）。
 - **长按 `KEY2`（700 ms）**：
   - 按住超过 150 ms 后浮出居中半透明遮罩与抗锯齿弧形蓄力环（`fillArc`, `0° → 360°`）；
   - 满 700 ms 瞬间：若 `cfg.autoRotate == false`，顺时针切换到 `(curRotation + 1) % 4`、持久化进 NVS、调用 `ui.onResize()` 并通过串口主动补发一次 `state`；若 `cfg.autoRotate == true`，保持重力自动方向不强行改配，弹出 1.5s 顶部 Toast 提示「自动旋屏已开」。
@@ -267,17 +267,16 @@ flowchart LR
 
 | 动画对象 | 数学模型 | 参数 | 视觉体验 |
 |---|---|---|---|
-| `pageScrollX_` | `SpringValue` | `visualDuration = 0.28f, bounce = 0.14f` | 干脆略带 Q 弹的三页横向推拉 |
-| `pillPos_` / `pillWidth_` | `SpringValue` | `visualDuration = 0.24f, bounce = 0.22f` | 底栏当前页胶囊灵动伸展缩放 |
-| `phasePop_` | `SpringValue` | `visualDuration = 0.30f, bounce = 0.26f` | 峰谷身份切换或进入新状态时轻弹确认 |
+| `pageScroll_` | `EasingValue` | `easeOutCubic, 200 ms` | 无回弹、无过冲的干脆滑入切页 |
+| 底栏胶囊宽/位置 | 随 `pageScroll_` 同步计算 | `pageScroll_.value()` | 平滑指示当前页，不来回震荡 |
 | `splitReveal_` | `EasingValue` | `easeOutCubic, 320 ms` | 新余额数据到达时赠金/充值堆叠条展开 |
-| `pulseUntil_` / `busySweep` | 线性周期函数 | `700 ms / 1400 ms` | KEY1 脉冲与 Core 0 查询顶边青光穿梭 |
+| `pulseUntil_` / `busySweep` | 线性周期函数 | `650 ms / 750 ms` | KEY1 脉冲与 Core 0 查询顶边青光穿梭 |
 | `holdBProgress` | 实时占比 | `150..700 ms` | 长按 KEY2 旋屏蓄力圆环与角度预演 |
 
 ### 6.2 自适应帧率策略（兼顾 40 FPS 丝滑与省电衔接）
 
 `LiangziUi::recommendedFrameIntervalMs(model, nowMs)` 动态判定：
-- **活跃态（`25 ms`，约 40 FPS）**：当任一 `SpringValue`/`EasingValue` 仍在收敛、`queryBusy == true`（顶栏扫光）、RWR 导弹告警闪烁中、KEY1 脉冲未消退、`holdBProgress > 0` 或 Toast 展示中。
+- **活跃态（`25 ms`，约 40 FPS）**：当 `EasingValue` 仍在收敛、`queryBusy == true`（顶栏扫光）、RWR 导弹告警闪烁中、KEY1 脉冲未消退、`holdBProgress > 0` 或 Toast 展示中。
 - **静态态（`500 ms` 调度 + 帧指纹脏检查）**：所有动画收敛且无实时扫光时，每 500 ms 检查一次秒级时钟/倒计时数字；仅当视觉状态真实发生变化（例如跨秒）时才向屏幕执行 `pushSprite()`，不产生无效 SPI 刷新。
 
 ### 6.3 StickS3 内存与 Flash 预算

@@ -169,10 +169,7 @@ bool LiangziUi::onResize(int width, int height) {
 void LiangziUi::setPage(int page, uint32_t nowMs) {
   const int clamped = ((page % kPageCount) + kPageCount) % kPageCount;
   page_ = clamped;
-  pageScroll_.setTarget(static_cast<float>(clamped));
-  pillPos_.setTarget(static_cast<float>(clamped));
-  pillWidth_.snap(18.0f);
-  pillWidth_.setTarget(13.0f);
+  pageScroll_.start(pageScroll_.value(), static_cast<float>(clamped), nowMs, 200);
   if (clamped == 1) {
     splitReveal_.start(0.08f, 1.0f, nowMs, 320);
   }
@@ -1347,7 +1344,6 @@ uint64_t LiangziUi::computeFingerprint(const UiModel& model, uint32_t nowMs) con
 }
 
 void LiangziUi::render(const UiModel& model, uint32_t nowMs, bool pushToTarget) {
-  const float dt = lastStepMs_ ? static_cast<float>(nowMs - lastStepMs_) / 1000.0f : 0.016f;
   lastStepMs_ = nowMs;
 
   if (model.dataRevision != lastRevision_) {
@@ -1360,9 +1356,10 @@ void LiangziUi::render(const UiModel& model, uint32_t nowMs, bool pushToTarget) 
     forceDirty_ = true;
   }
 
-  const bool moving = pageScroll_.step(dt) | pillPos_.step(dt) | pillWidth_.step(dt);
-  const bool easing = splitReveal_.isMoving();
+  pageScroll_.update(nowMs);
   splitReveal_.update(nowMs);
+  const bool moving = pageScroll_.isMoving();
+  const bool easing = splitReveal_.isMoving();
 
   const bool activeFx = moving || easing || model.queryBusy || model.mslAlertActive ||
                         (nowMs < pulseUntilMs_) || (model.holdBProgress > 0.01f) ||
@@ -1436,8 +1433,7 @@ uint32_t LiangziUi::recommendedFrameIntervalMs(const UiModel& model, uint32_t no
     return 25;
   }
   if (!model.configured || !model.wifiConnected) return 35;
-  if (pageScroll_.isMoving() || pillPos_.isMoving() || pillWidth_.isMoving() ||
-      splitReveal_.isMoving()) {
+  if (pageScroll_.isMoving() || splitReveal_.isMoving()) {
     return 25;
   }
   return 500;

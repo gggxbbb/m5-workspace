@@ -186,9 +186,9 @@ class MotdUi {
   size_t motdPageIdx_ = 0;
   uint32_t motdPageSwitchMs_ = 0;
 
-  SpringValue pageScroll_{0.0f, 0.28f, 0.15f};
-  SpringValue motdScrollY_{0.0f, 0.34f, 0.10f};
-  SpringValue iconScale_{1.0f, 0.30f, 0.28f};
+  EasingValue pageScroll_{0.0f, 200};
+  EasingValue motdScrollY_{0.0f, 240};
+  EasingValue iconScale_{1.0f, 220};
   EasingValue waterfallReveal_{1.0f, 320};
 };
 

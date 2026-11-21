@@ -104,9 +104,7 @@ class LiangziUi {
   uint64_t lastIdleHash_ = 0;
   bool forceDirty_ = true;
 
-  SpringValue pageScroll_{0.0f, 0.28f, 0.14f};
-  SpringValue pillPos_{0.0f, 0.24f, 0.22f};
-  SpringValue pillWidth_{13.0f, 0.24f, 0.22f};
+  EasingValue pageScroll_{0.0f, 200};
   EasingValue splitReveal_{1.0f, 320};
 };
 
