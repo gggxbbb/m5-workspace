@@ -1,110 +1,109 @@
-// liangzi-meter — StickS3 固件
-// 通过原生 USB CDC 串口接收上位机配置（WiFi/NTP/API key/峰谷时段覆盖），
-// 显示北京时间、峰谷状态（高峰期「梁文峰」/ 非高峰期「梁文谷」）与 DeepSeek 账户余额。
+// liangzi-meter — StickS3 固件 (v1.4.0 Obsidian HUD)
+// 通过原生 USB CDC 串口接收上位机配置（WiFi/NTP/API key/峰谷时段覆盖/提示音/屏幕方向），
+// 显示北京时间、峰谷状态（高峰期「梁文峰」/ 非高峰期「梁文谷」）、DeepSeek 余额拆分与消耗趋势。
 //
 // 协议：JSON Lines @115200（见 docs/adr/0002-jsonl-serial-protocol.md）
 //   上位机→固件: ping / config / get_state
 //   固件→上位机: hello / ack / state
 
+#include <ArduinoJson.h>
+#include <LiangziUi.h>
 #include <M5Unified.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
-#include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
+#include <cstring>
+#include <memory>
+#include <new>
+#include <string>
 #include <time.h>
-#include "config.h"
-#include "certs.h"
-#include "peak_font.h"
 #include "alert.h"
+#include "certs.h"
+#include "config.h"
 
-#define FW_VERSION "1.3.0"
+#define FW_VERSION "1.4.0"
 #define MODEL_NAME "StickS3"
 
 #define BALANCE_HOST "api.deepseek.com"
 #define BALANCE_PATH "/user/balance"
-#define BALANCE_INTERVAL_MS (5UL * 60UL * 1000UL)  // 余额刷新周期 5 分钟
+#define BALANCE_INTERVAL_MS (5UL * 60UL * 1000UL)  // 非高峰默认刷新周期 5 分钟
+#define PEAK_QUERY_INTERVAL_MS 15000UL             // 高峰 RWR 监控周期 15 秒（ADR-0004）
 #define NTP_RESYNC_MS (6UL * 3600UL * 1000UL)      // NTP 每 6 小时重同步
 #define STATE_INTERVAL_MS (60UL * 1000UL)          // 状态上报周期 60 秒
 #define SERIAL_BUF 512
 
 // ---------- 屏幕旋转（ADR-0005）----------
 // M5GFX rotation: 0=竖屏正常 1=顺时针90°(横屏) 2=180° 3=逆时针90°(横屏)
-#define IMU_CHECK_INTERVAL_MS 500UL   // 重力采样间隔（与显示节流同拍）
-#define IMU_CONFIRM_COUNT 3           // 同一目标方向连续确认 N 次才切换（防抖 1.5s）
-#define GRAV_MAJOR_TH 0.55f           // 主导轴判定阈值（g）
-#define GRAV_CROSS_TH 0.35f           // 交叉轴上限（姿态倾斜时不切换）
-uint8_t curRotation = 0;              // 当前屏幕方向
+#define IMU_CHECK_INTERVAL_MS 500UL
+#define IMU_CONFIRM_COUNT 3
+#define GRAV_MAJOR_TH 0.55f
+#define GRAV_CROSS_TH 0.35f
+uint8_t curRotation = 0;
 
 // ---------- 全局状态 ----------
 
 Config cfg;
 Preferences prefs;
+liangzi::LiangziUi ui;
+liangzi::BalanceHistory balanceHistory;
 
 bool timeSynced = false;
-int  page = 0;            // 0=主页面 1=详情页
-bool fullRedraw = true;   // 强制重绘（页面切换/配置变更/同步态翻转时置位）
+bool dirty = true;
+uint32_t dataRevision = 1;
 
-// 双缓冲帧缓冲：所有绘制先画到 canvas，完成后 pushSprite 一次性推屏幕，
-// 消除「擦除→绘制」之间的闪屏。StickS3 有 8MB OPI PSRAM，canvas 置于 PSRAM。
-M5Canvas canvas(&M5.Display);
-
-// 峰谷大字预渲染 sprite：开机时从稀疏像素表（peak_font.h）drawPixel 填入，
-// 之后不变。显示时 peakSprite[idx].pushSprite(&canvas, ox, oy) 一次内存拷贝，
-// 替代每次 2500+ 次 drawPixel 循环。背景=CLR_BG，覆盖主 canvas 同色背景无视觉差异。
-// [0]=梁文峰(黄)  [1]=梁文谷(绿)
-M5Canvas peakSprite[2] = { M5Canvas(&M5.Display), M5Canvas(&M5.Display) };
-
-// 帧内容快照：只在内容真正变化时才重绘 + pushSprite，避免无谓刷新导致发热。
-struct FrameSnap {
-  char    time[24];       // 顶部时间串
-  char    countdown[16];  // 倒计时串
-  char    balance[32];    // 余额串
-  uint8_t peakImg;        // 0=未同步 1=峰 2=谷
-  uint8_t page;           // 当前页码
-  bool    lowBalance;     // 余额告警态
-};
-FrameSnap prevSnap;           // 零初始化
-bool      snapValid = false;  // 首帧必触发全绘
-
-// 余额状态
+// 余额状态（由 Core 0 balanceTask 查询，Core 1 唯一消费）
 double balance = 0.0;
-bool   balanceValid = false;
-bool   balanceExpired = false;
+double grantedBalance = 0.0;
+double toppedUpBalance = 0.0;
+bool hasSplit = false;
+std::string currency = "CNY";
+bool balanceAvailable = true;
+bool balanceValid = false;
+bool balanceExpired = false;
+int lastHttpStatus = 0;
+double lastDelta = 0.0;
+bool hasDelta = false;
 unsigned long lastBalanceFetch = 0;
-bool   balanceForce = true;  // 开机/下发配置/按 KEY1 时置位，WiFi 就绪后立即查询
+bool balanceForce = true;
 
-// 余额查询状态机（异步）——避免同步阻塞导致 loop 卡死、显示刷新停顿（黑屏诱因）。
-// connect 仍同步（TLS 握手 1-2s，受 setTimeout 控制），但读取阶段非阻塞：
-// 每次 loop 只读当前 available 的字节，查询期间 loop 继续转，显示/串口/按键不中断。
-enum BalanceState {
-  BS_IDLE,
-  BS_CONNECTING,  // TCP+TLS 握手
-  BS_SENDING,     // 发送 HTTP 请求
-  BS_READING,     // 非阻塞读响应，累积到 bsResp
-  BS_PARSING,     // 解析并更新全局 balance
+// Core 0 异步请求队列与竞态代际号
+struct BalanceJob {
+  char apiKey[192];
+  uint32_t generation;
 };
-BalanceState    bsState = BS_IDLE;
-WiFiClientSecure bsClient;   // 跨状态保持，IDLE 时空闲
-String          bsResp;
-uint32_t        bsLastData;        // READ 阶段最后收到数据时间（静默超时用）
-uint32_t        bsReadStart;       // READ 阶段开始时间（整体超时保底用）
-double          bsResultBalance;
-bool            bsResultAvailable;
-#define BS_READ_SILENCE_MS  300    // 读响应静默超时：300ms 无新数据判定结束
-#define BS_READ_TOTAL_MS    5000   // 读响应整体超时保底
+struct BalanceResponse {
+  liangzi::BalanceParseResult parsed;
+  uint32_t generation;
+};
+QueueHandle_t balanceReqQ = nullptr;
+QueueHandle_t balanceRespQ = nullptr;
+bool balanceBusy = false;
+bool balanceDiscard = false;
+uint32_t balanceGen = 1;
+#define BS_READ_SILENCE_MS 350UL
+#define BS_READ_TOTAL_MS 6000UL
 
 unsigned long lastWifiAttempt = 0;
 unsigned long lastNtpAttempt = 0;
 unsigned long lastStateSend = 0;
 unsigned long lastDisplayTick = 0;
+unsigned long lastPowerPoll = 0;
 
-// ---------- 提示音功能（ADR-0004）----------
-// 开启后：进入高峰播敌跟踪音一次；高峰期间余额查询 15s 一次；
-// 某次查询余额比上次减少 > 0.01 元则进入持续敌导弹音，直到某次判定不再减少。
-#define PEAK_QUERY_INTERVAL_MS 15000UL   // 高峰期间余额查询间隔
-#define BALANCE_DECREASE_EPS 0.01        // 判定「余额减少」的阈值（元）
-int8_t   prevPeak = -1;                  // 上次峰谷（-1=未同步/未知，1=峰 2=谷）
-double   lastBalance = -1.0;             // 上次成功查询的余额（对比基准）
-bool     mslAlertActive = false;         // 持续敌导弹告警进行中
+int batteryPct = -1;
+bool chargingState = false;
+int wifiRssi = -127;
+
+// 长按 KEY2（700ms）蓄力旋屏
+unsigned long btnBDownAt = 0;
+bool btnBHoldFired = false;
+float holdBProgress = 0.0f;
+
+// ---------- 提示音状态（ADR-0004）----------
+int8_t prevPeak = -1;       // -1=未知 1=峰 2=谷
+double lastBalance = -1.0;  // 上次成功查询对比基准
+bool mslAlertActive = false;
 
 char serialBuf[SERIAL_BUF];
 size_t serialLen = 0;
@@ -135,31 +134,34 @@ void sendAck(bool ok, const char *msg) {
 
 void sendState() {
   time_t now = time(nullptr);
+  liangzi::BeijingDateTime dt;
+  liangzi::epochToBeijingDateTime(static_cast<int64_t>(now), dt);
+
   JsonDocument doc;
   doc["type"] = "state";
   doc["ts"] = now;
-  struct tm tmv;
-  localtime_r(&now, &tmv);
   char tbuf[32];
   snprintf(tbuf, sizeof(tbuf), "%04d-%02d-%02d %02d:%02d:%02d",
-           tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-           tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+           dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
   doc["time"] = tbuf;
-  int md = tmv.tm_hour * 60 + tmv.tm_min;
   if (timeSynced) {
-    int year = tmv.tm_year + 1900;
-    int month = tmv.tm_mon + 1;
-    doc["phase"] = inPeakWindow(cfg, year, month, tmv.tm_mday, tmv.tm_wday, md)
+    doc["phase"] = inPeakWindow(cfg, dt.year, dt.month, dt.day, dt.wday, dt.minuteOfDay)
                        ? "peak"
                        : "offpeak";
-    doc["weekend"] = isWeekend(tmv.tm_wday);
-    doc["holiday"] = isChinaPublicHoliday(year, month, tmv.tm_mday);
+    doc["weekend"] = isWeekend(dt.wday);
+    doc["holiday"] = isChinaPublicHoliday(dt.year, dt.month, dt.day);
   } else {
     doc["phase"] = "unknown";
   }
   doc["balance"] = balanceValid ? balance : -1;
   doc["balance_valid"] = balanceValid;
   doc["balance_expired"] = balanceExpired;
+  if (balanceValid) {
+    doc["granted_balance"] = hasSplit ? grantedBalance : -1;
+    doc["topped_up_balance"] = hasSplit ? toppedUpBalance : -1;
+    doc["currency"] = currency.c_str();
+    doc["balance_available"] = balanceAvailable;
+  }
   doc["wifi"] = WiFi.status() == WL_CONNECTED;
   doc["ssid"] = cfg.ssid;
   doc["ip"] = WiFi.localIP().toString();
@@ -181,10 +183,9 @@ static int hhmmToMin(const char *s) {
   return h * 60 + m;
 }
 
-void applyRotation(uint8_t rot);  // 定义见「显示」节（canvas 重建依赖其存在）
+void applyRotation(uint8_t rot);
 
 void applyConfig() {
-  // 若 wifi 参数变化或当前未连接则重连
   WiFi.disconnect();
   if (cfg.hasWifi()) {
     WiFi.mode(WIFI_STA);
@@ -193,26 +194,27 @@ void applyConfig() {
     WiFi.mode(WIFI_OFF);
   }
   lastWifiAttempt = millis();
-  // NTP 立即用新服务器重新同步
   configTime(8 * 3600, 0, cfg.ntp.c_str());
   lastNtpAttempt = millis();
-  // API key 变化后立即重查余额
-  if (bsState != BS_IDLE) {
-    // 中断正在进行的查询（可能在用旧 key），丢弃结果，回 IDLE 让新配置立即重查
-    bsClient.stop();
-    bsResp = "";
-    bsState = BS_IDLE;
-  }
+
+  // 使旧配置期间的在途 Core 0 余额查询失效并立即重查
+  ++balanceGen;
+  if (balanceBusy) balanceDiscard = true;
   balanceForce = true;
   balanceValid = false;
   balanceExpired = false;
-  fullRedraw = true;
-  // 开关被关闭时立即静音并退出持续告警
+  hasSplit = false;
+  hasDelta = false;
+  lastHttpStatus = 0;
+  lastBalance = -1.0;
+  balanceHistory.clear();
+  ++dataRevision;
+  dirty = true;
+
   if (!cfg.alertEnabled && mslAlertActive) {
     mslAlertActive = false;
     stopAlert();
   }
-  // 应用配置的默认屏幕方向（autoRotate 开启时随后由重力判定接管覆盖）
   applyRotation((uint8_t)cfg.screenRotation);
 }
 
@@ -232,7 +234,7 @@ void handleConfig(JsonDocument &doc) {
 
   JsonArray ranges = doc["peak_ranges"];
   if (ranges.isNull()) {
-    cfg.peakCount = 0;  // 回退官方默认
+    cfg.peakCount = 0;
   } else {
     int n = 0;
     for (JsonVariant v : ranges) {
@@ -267,8 +269,6 @@ void handleLine(char *line) {
     handleConfig(doc);
   } else if (strcmp(type, "get_state") == 0) {
     sendState();
-  } else {
-    // 未知 type：忽略，保证协议向前兼容
   }
 }
 
@@ -285,12 +285,61 @@ void pumpSerial() {
   }
 }
 
-// ---------- 网络 ----------
+// ---------- Core 0 后台余额查询 ----------
+
+void balanceTask(void *) {
+  BalanceJob *rawJob = nullptr;
+  for (;;) {
+    if (xQueueReceive(balanceReqQ, &rawJob, portMAX_DELAY) != pdTRUE) continue;
+    std::unique_ptr<BalanceJob> job(rawJob);
+    auto *resp = new (std::nothrow) BalanceResponse;
+    if (!resp) abort();
+    resp->generation = job->generation;
+
+    WiFiClientSecure client;
+    client.setCACert(ROOT_CA);
+    client.setTimeout(6);
+
+    if (client.connect(BALANCE_HOST, 443)) {
+      client.print("GET " BALANCE_PATH " HTTP/1.1\r\n");
+      client.print("Host: " BALANCE_HOST "\r\n");
+      client.print("Authorization: Bearer ");
+      client.print(job->apiKey);
+      client.print("\r\nUser-Agent: liangzi-meter/" FW_VERSION "\r\nConnection: close\r\n\r\n");
+
+      std::string raw;
+      raw.reserve(1024);
+      const uint32_t readStart = millis();
+      uint32_t lastData = readStart;
+      for (;;) {
+        while (client.available() && raw.size() < 4096) {
+          const int c = client.read();
+          if (c < 0) break;
+          raw.push_back(static_cast<char>(c));
+          lastData = millis();
+        }
+        const uint32_t now = millis();
+        if (!client.connected() && !client.available()) break;
+        if (now - lastData > BS_READ_SILENCE_MS) break;
+        if (now - readStart > BS_READ_TOTAL_MS) break;
+        if (raw.size() >= 4096) break;
+        vTaskDelay(pdMS_TO_TICKS(2));
+      }
+      client.stop();
+      liangzi::parseDeepSeekBalanceHttp(raw.data(), raw.size(), resp->parsed);
+    } else {
+      client.stop();
+    }
+
+    if (xQueueSend(balanceRespQ, &resp, portMAX_DELAY) != pdTRUE) abort();
+  }
+}
+
+// ---------- 网络与状态调度 ----------
 
 void manageWiFi() {
   if (!cfg.hasWifi()) return;
-  if (WiFi.status() != WL_CONNECTED &&
-      millis() - lastWifiAttempt > 30000UL) {
+  if (WiFi.status() != WL_CONNECTED && millis() - lastWifiAttempt > 30000UL) {
     lastWifiAttempt = millis();
     WiFi.begin(cfg.ssid.c_str(), cfg.password.length() ? cfg.password.c_str() : NULL);
   }
@@ -305,174 +354,108 @@ void manageNtp() {
   }
 }
 
-// 是否处于「高峰监控」窗口：提示音功能开启 + 时间已同步 + 当前在高峰时段内
 bool inPeakWatch() {
   if (!cfg.alertEnabled) return false;
   time_t now = time(nullptr);
   if (now <= 1600000000L) return false;
-  struct tm tmv;
-  localtime_r(&now, &tmv);
-  return inPeakWindow(cfg, tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-                      tmv.tm_wday, tmv.tm_hour * 60 + tmv.tm_min);
+  liangzi::BeijingDateTime dt;
+  liangzi::epochToBeijingDateTime(static_cast<int64_t>(now), dt);
+  return inPeakWindow(cfg, dt.year, dt.month, dt.day, dt.wday, dt.minuteOfDay);
 }
 
-// 完成一次查询（成功或失败），更新全局余额状态，清理连接，回 IDLE
-// 成功时顺带跑「余额减少 → 持续敌导弹」状态机（ADR-0004）
-static void finishBalance(bool ok) {
-  if (ok) {
-    balance = bsResultBalance;
+void acceptBalanceResponse(uint32_t nowMs) {
+  BalanceResponse *rawResp = nullptr;
+  if (xQueueReceive(balanceRespQ, &rawResp, 0) != pdTRUE) return;
+  std::unique_ptr<BalanceResponse> resp(rawResp);
+  balanceBusy = false;
+
+  if (balanceDiscard || resp->generation != balanceGen) {
+    balanceDiscard = false;
+    balanceForce = true;
+    dirty = true;
+    return;
+  }
+
+  lastBalanceFetch = nowMs;
+  balanceForce = false;
+
+  if (resp->parsed.ok) {
+    balance = resp->parsed.totalBalance;
+    grantedBalance = resp->parsed.grantedBalance;
+    toppedUpBalance = resp->parsed.toppedUpBalance;
+    hasSplit = resp->parsed.hasSplit;
+    currency = resp->parsed.currency.empty() ? "CNY" : resp->parsed.currency;
+    balanceAvailable = resp->parsed.isAvailable;
+    lastHttpStatus = resp->parsed.httpStatus;
     balanceValid = true;
     balanceExpired = false;
-    // 先判定再更新基准：prev 为上次成功查询值
-    double prev = lastBalance;
+
+    const double prev = lastBalance;
     lastBalance = balance;
-    if (inPeakWatch()) {
-      if (prev >= 0) {
-        if (!mslAlertActive && balance < prev - BALANCE_DECREASE_EPS) {
-          mslAlertActive = true;      // 余额减少 → 进入持续敌导弹音
-          playAlert(AL_MSL);
-        } else if (mslAlertActive && balance >= prev) {
-          mslAlertActive = false;     // 判定不再减少 → 停止
-          stopAlert();
-        }
-      }
-    } else if (mslAlertActive) {
+    const bool peakNow = inPeakWatch();
+    const bool decreased = (prev >= 0.0) && (balance < prev - liangzi::kBalanceDecreaseEps);
+    if (prev >= 0.0) {
+      lastDelta = balance - prev;
+      hasDelta = true;
+    }
+
+    balanceHistory.push(liangzi::BalanceSample{
+        balance, grantedBalance, toppedUpBalance, nowMs, peakNow, decreased});
+
+    const auto act = liangzi::evaluateRwrBalanceUpdate(peakNow, mslAlertActive, prev, balance);
+    if (act == liangzi::RwrAction::kStartMissile) {
+      mslAlertActive = true;
+      playAlert(AL_MSL);
+    } else if (act == liangzi::RwrAction::kStopMissile) {
       mslAlertActive = false;
       stopAlert();
     }
   } else {
-    balanceExpired = balanceValid;  // 保留旧值并标记过期
-  }
-  lastBalanceFetch = millis();
-  balanceForce = false;
-  bsClient.stop();
-  bsResp = "";
-  bsState = BS_IDLE;
-}
-
-// 解析累积的完整 HTTP 响应（bsResp 含头+body），写入 bsResult*
-static bool parseBalanceResponse() {
-  int split = bsResp.indexOf("\r\n\r\n");
-  if (split < 0) return false;
-  String head = bsResp.substring(0, split);
-  String body = bsResp.substring(split + 4);
-
-  int sp = head.indexOf(' ');
-  int status = (sp >= 0) ? atoi(head.c_str() + sp + 1) : 0;
-  if (status != 200) return false;
-
-  JsonDocument doc;
-  if (deserializeJson(doc, body)) return false;
-  if (!doc["is_available"].is<bool>()) return false;
-  bsResultAvailable = doc["is_available"] | false;
-  JsonArray infos = doc["balance_infos"].as<JsonArray>();
-  if (infos.isNull() || infos.size() == 0) return false;
-  const char *tb = infos[0]["total_balance"] | "";
-  if (!tb || !*tb) return false;
-  bsResultBalance = strtod(tb, nullptr);
-  return true;
-}
-
-void manageBalance() {
-  // IDLE：检查是否该发起查询（高峰监控期间 15s，否则默认 5min）
-  if (bsState == BS_IDLE) {
-    bool due = cfg.apiKey.length() > 0 &&
-               WiFi.status() == WL_CONNECTED &&
-               (balanceForce ||
-                millis() - lastBalanceFetch >
-                    (inPeakWatch() ? PEAK_QUERY_INTERVAL_MS : BALANCE_INTERVAL_MS));
-    if (!due) return;
-    bsResp = "";
-    bsResultAvailable = true;
-    bsClient.setCACert(ROOT_CA);
-    bsClient.setTimeout(6);  // connect/TLS 握手超时（秒）
-    bsState = BS_CONNECTING;
-    // 落到下面执行 connect
+    if (resp->parsed.httpStatus > 0) lastHttpStatus = resp->parsed.httpStatus;
+    balanceExpired = balanceValid;
   }
 
-  switch (bsState) {
-    case BS_CONNECTING: {
-      // connect 同步（TLS 握手 1-2s）；失败或超时立即结束
-      if (bsClient.connect(BALANCE_HOST, 443)) {
-        bsState = BS_SENDING;
-      } else {
-        finishBalance(false);
-      }
-      break;
-    }
-    case BS_SENDING: {
-      bsClient.print("GET " BALANCE_PATH " HTTP/1.1\r\n");
-      bsClient.print("Host: " BALANCE_HOST "\r\n");
-      bsClient.print("Authorization: Bearer ");
-      bsClient.print(cfg.apiKey);
-      bsClient.print("\r\nUser-Agent: liangzi-meter/" FW_VERSION "\r\nConnection: close\r\n\r\n");
-      bsState = BS_READING;
-      bsReadStart = millis();
-      bsLastData = millis();
-      break;
-    }
-    case BS_READING: {
-      // 非阻塞读：每次 loop 只读当前 available 的字节，不 delay、不阻塞
-      while (bsClient.available() && bsResp.length() < 4096) {
-        int c = bsClient.read();
-        if (c < 0) break;
-        bsResp += (char)c;
-        bsLastData = millis();
-      }
-      // 结束判定：连接关闭且无残留 / 静默超时 / 整体超时 / 缓冲区满
-      if (!bsClient.connected() && !bsClient.available()) {
-        bsState = BS_PARSING;
-      } else if (millis() - bsLastData > BS_READ_SILENCE_MS) {
-        bsState = BS_PARSING;
-      } else if (millis() - bsReadStart > BS_READ_TOTAL_MS) {
-        finishBalance(false);
-      } else if (bsResp.length() >= 4096) {
-        bsState = BS_PARSING;
-      }
-      break;
-    }
-    case BS_PARSING: {
-      (void)bsResultAvailable;  // is_available 当前未用于显示，保留解析
-      finishBalance(parseBalanceResponse());
-      break;
-    }
-    default:
-      bsState = BS_IDLE;
-      break;
+  ++dataRevision;
+  dirty = true;
+}
+
+void scheduleBalanceRequest(uint32_t nowMs) {
+  if (balanceBusy) return;
+  if (cfg.apiKey.length() == 0 || WiFi.status() != WL_CONNECTED) return;
+
+  const unsigned long interval = inPeakWatch() ? PEAK_QUERY_INTERVAL_MS : BALANCE_INTERVAL_MS;
+  const bool due = balanceForce || (lastBalanceFetch == 0) || (nowMs - lastBalanceFetch >= interval);
+  if (!due) return;
+
+  auto *job = new (std::nothrow) BalanceJob{};
+  if (!job) return;
+  std::snprintf(job->apiKey, sizeof(job->apiKey), "%s", cfg.apiKey.c_str());
+  job->generation = balanceGen;
+  if (xQueueSend(balanceReqQ, &job, 0) == pdTRUE) {
+    balanceBusy = true;
+    balanceForce = false;
+    dirty = true;
+  } else {
+    delete job;
   }
 }
 
-// ---------- 显示 ----------
+// ---------- 显示与重力旋屏（ADR-0005）----------
 
-// 应用屏幕方向：setRotation 会改变 Display 宽高，必须重建 canvas 双缓冲，
-// 并强制整帧重绘。peakSprite 尺寸固定（108x36），与方向无关，无需重建。
 void applyRotation(uint8_t rot) {
   if (rot > 3) rot = 0;
   if (rot == curRotation) return;
   curRotation = rot;
   M5.Display.setRotation(rot);
-  canvas.deleteSprite();
-  canvas.setPsram(true);
-  if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) {
-    canvas.setPsram(false);
-    canvas.createSprite(M5.Display.width(), M5.Display.height());
-  }
-  fullRedraw = true;
+  ui.onResize(M5.Display.width(), M5.Display.height());
+  dirty = true;
 }
 
-// 由重力方向推断目标屏幕方向（返回 0..3，-1 表示姿态模糊保持当前）。
-// 轴约定（真机标定 2026-08-03 imu-calib，见 w96p-remote/docs/sticks3-remote-design.md）：
-// M5Unified BMI270 驱动轴系 ≠ 官方图，绕 Z 旋转 90°：
-//   驱动 +X = 朝 USB 端（设备底部）、驱动 +Y = 设备右侧、驱动 +Z = 屏幕外。
-// 静止时加速度计读的是比力（指向上方，与重力相反）。设备长轴（顶部/摄像头）= -X_driver：
-//   顶朝上 → ax<0 → rotation 0    顶朝下 → ax>0 → rotation 2
-//   顶朝右 → ay<0 → rotation 3    顶朝左 → ay>0 → rotation 1
-// （横屏左右 1/3 对应关系经真机实测对调：M5GFX rotation 1 内容顶朝左、rotation 3 顶朝右）
 static int8_t rotationFromGravity(float ax, float ay) {
   float axa = fabsf(ax), aya = fabsf(ay);
-  if (axa < GRAV_MAJOR_TH && aya < GRAV_MAJOR_TH) return -1;  // 平放/侧放：Z 轴主导
+  if (axa < GRAV_MAJOR_TH && aya < GRAV_MAJOR_TH) return -1;
   if (axa > aya) {
-    if (aya > GRAV_CROSS_TH) return -1;  // 倾斜过重，不切换
+    if (aya > GRAV_CROSS_TH) return -1;
     return ax < 0 ? 0 : 2;
   } else {
     if (axa > GRAV_CROSS_TH) return -1;
@@ -480,9 +463,7 @@ static int8_t rotationFromGravity(float ax, float ay) {
   }
 }
 
-// 重力感应旋屏状态机：周期性采样 IMU，同一目标方向连续确认 N 次才切换（防抖），
-// 避免临界姿态抖动。IMU 不可用（isEnabled()==false）时静默跳过。
-static int8_t  pendingRotation = -1;
+static int8_t pendingRotation = -1;
 static uint8_t pendingCount = 0;
 static unsigned long lastImuCheck = 0;
 
@@ -496,7 +477,7 @@ void manageRotation() {
   M5.Imu.getAccel(&ax, &ay, &az);
 
   int8_t target = rotationFromGravity(ax, ay);
-  if (target < 0) {  // 姿态模糊：清空累积，防止半途计数在晃动后误触发
+  if (target < 0) {
     pendingRotation = -1;
     pendingCount = 0;
     return;
@@ -513,324 +494,136 @@ void manageRotation() {
   }
 }
 
-#define CLR_BG M5.Display.color565(10, 12, 16)
-#define CLR_FG M5.Display.color565(230, 234, 240)
-#define CLR_DIM M5.Display.color565(120, 128, 140)
-#define CLR_PEAK M5.Display.color565(255, 200, 50)   // 高峰期「梁文峰」：黄色（见 ADR-0003）
-#define CLR_OFF M5.Display.color565(64, 208, 120)    // 非高峰期「梁文谷」：绿色
-#define CLR_WARN M5.Display.color565(255, 70, 70)    // 余额低于阈值：红色（唯一红色用法）
+liangzi::UiModel buildUiModel(uint32_t nowMs) {
+  liangzi::UiModel m;
+  m.configured = cfg.hasWifi();
+  m.wifiConnected = cfg.hasWifi() && (WiFi.status() == WL_CONNECTED);
+  m.wifiRssi = m.wifiConnected ? wifiRssi : -127;
+  m.ssid = cfg.ssid.c_str();
+  m.ip = m.wifiConnected ? WiFi.localIP().toString().c_str() : "-";
+  m.ntp = cfg.ntp.c_str();
+  m.fwVersion = FW_VERSION;
 
-const char *weekdayCn(int wday) {
-  static const char *map[7] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
-  return map[wday];
-}
-
-// 所有绘制目标改为 canvas（双缓冲），字符串内容由 updateDisplay 预先算好存入 cur，
-// 避免渲染函数内重复 snprintf。canvas 已由 updateDisplay 调用 fillScreen 清空。
-
-void renderMainToCanvas(bool synced, time_t now, const FrameSnap &cur) {
-  (void)now;
-  (void)synced;  // cur.peakImg 已编码同步态
-  const int w = canvas.width();
-
-  if (w > canvas.height()) {
-    // ---- 横屏 240×135：左右分栏 ----
-    // 峰谷大字靠设备底部（USB 端）一侧，时间/倒计时/余额在另一栏：
-    //   rotation 1（顶朝左）→ USB 在右 → 大字右栏
-    //   rotation 3（顶朝右）→ USB 在左 → 大字左栏
-    // 两栏视觉重心仍在屏幕中心。
-    bool bigRight = (curRotation == 1);
-    int bigCx = bigRight ? 182 : 58;  // 大字中心 x（108 宽，落在 0~120 / 120~240 栏内）
-    int txtCx = bigRight ? 58 : 182;  // 文字中心 x
-
-    // 大字（栏内居中，y 中心 68 → 顶 50 底 86）
-    if (cur.peakImg == 0) {
-      canvas.setTextDatum(middle_center);
-      canvas.setFont(&fonts::efontCN_16);
-      canvas.setTextColor(CLR_DIM);
-      canvas.drawString("时间未同步", bigCx, 68);
-    } else {
-      peakSprite[cur.peakImg - 1].pushSprite(&canvas, bigCx - PEAK_W / 2, 50);
-    }
-
-    // 文字栏：时间 / 倒计时 / 余额
-    canvas.setTextDatum(middle_center);
-    canvas.setFont(&fonts::efontCN_12);
-    canvas.setTextColor(CLR_DIM);
-    canvas.drawString(cur.time, txtCx, 24);
-    canvas.setFont(&fonts::efontCN_16);
-    canvas.setTextColor(CLR_FG);
-    canvas.drawString(cur.countdown, txtCx, 50);
-    canvas.setFont(&fonts::efontCN_24);
-    canvas.setTextColor(cur.lowBalance ? CLR_WARN : CLR_FG);
-    canvas.drawString(cur.balance, txtCx, 88);
-    return;
-  }
-
-  // ---- 竖屏 135×240（原布局）----
-
-  // 顶部：北京时间
-  canvas.setFont(&fonts::efontCN_12);
-  canvas.setTextDatum(middle_center);
-  canvas.setTextColor(CLR_DIM);
-  canvas.drawString(cur.time, canvas.width() / 2, 14);
-
-  // 「当前时段剩余」标签
-  canvas.drawString("当前时段剩余", canvas.width() / 2, 31);
-
-  // 倒计时数字
-  canvas.setFont(&fonts::efontCN_16);
-  canvas.setTextColor(CLR_FG);
-  canvas.drawString(cur.countdown, canvas.width() / 2, 47);
-
-  // 「现在是」
-  canvas.setFont(&fonts::efontCN_12);
-  canvas.setTextColor(CLR_DIM);
-  canvas.drawString("现在是", canvas.width() / 2, 63);
-
-  // 峰谷大字：预渲染 sprite 一次内存拷贝推到主 canvas（替代 drawPixel 循环）
-  if (cur.peakImg == 0) {
-    canvas.setFont(&fonts::efontCN_16);
-    canvas.setTextColor(CLR_DIM);
-    canvas.drawString("时间未同步", canvas.width() / 2, 120);
-  } else {
-    int ox = (canvas.width() - PEAK_W) / 2;
-    int oy = 120 - PEAK_H / 2;
-    peakSprite[cur.peakImg - 1].pushSprite(&canvas, ox, oy);
-  }
-
-  // 「余额」标签
-  canvas.setFont(&fonts::efontCN_12);
-  canvas.setTextColor(CLR_DIM);
-  canvas.drawString("余额", canvas.width() / 2, 170);
-
-  // 金额（低于阈值红色 — 红色仅用于余额告警）
-  canvas.setFont(&fonts::efontCN_24);
-  canvas.setTextColor(cur.lowBalance ? CLR_WARN : CLR_FG);
-  canvas.drawString(cur.balance, canvas.width() / 2, 200);
-
-  // 底部提示
-  canvas.setFont(&fonts::efontCN_12);
-  canvas.setTextColor(CLR_DIM);
-  canvas.drawString("KEY1 刷新  KEY2 详情", canvas.width() / 2, 228);
-}
-
-void renderInfoToCanvas(const FrameSnap &cur) {
-  // canvas 已由 updateDisplay 调用 fillScreen 清空
-  const int w = canvas.width();
-
-  // 余额大字（两布局共用）
-  char bbuf[32];
-  uint16_t balColor;
-  if (!balanceValid) {
-    snprintf(bbuf, sizeof(bbuf), "--");
-    balColor = CLR_DIM;
-  } else {
-    snprintf(bbuf, sizeof(bbuf), "%.2f 元", balance);
-    balColor = cur.lowBalance ? CLR_WARN : CLR_FG;
-  }
-
-  if (w > canvas.height()) {
-    // ---- 横屏 240×135：标题+返回 / 余额大字 / 状态 / 2 列×3 行详情 ----
-    canvas.setTextDatum(middle_center);
-    canvas.setFont(&fonts::efontCN_12);
-    canvas.setTextColor(CLR_DIM);
-    canvas.drawString("余额详情", w / 2, 8);
-    canvas.setTextDatum(middle_right);
-    canvas.drawString("KEY2 返回", w - 6, 8);
-
-    canvas.setFont(&fonts::efontCN_24);
-    canvas.setTextColor(balColor);
-    canvas.drawString(bbuf, w / 2, 32);
-
-    canvas.setFont(&fonts::efontCN_12);
-    if (!cfg.apiKey.length()) {
-      canvas.setTextColor(CLR_WARN);
-      canvas.drawString("未配置 API Key", w / 2, 66);
-    } else if (balanceValid && balanceExpired) {
-      canvas.setTextColor(CLR_WARN);
-      canvas.drawString("查询失败 · 显示旧数据", w / 2, 66);
-    } else if (balanceValid) {
-      canvas.setTextColor(CLR_OFF);
-      canvas.drawString("查询正常", w / 2, 66);
-    } else {
-      canvas.setTextColor(CLR_WARN);
-      canvas.drawString("等待首次查询", w / 2, 66);
-    }
-
-    // 详情 2 列（左 x=8，右 x=120；12 号半角数字 ~6px，右列最宽 108px）
-    canvas.setTextDatum(middle_left);
-    canvas.setTextColor(CLR_DIM);
-    char l[64], r[64];
-    String ssid = cfg.ssid;
-    if (ssid.length() > 8) ssid = ssid.substring(0, 8);  // 截断防溢出右列
-    int yy = 90;
-    snprintf(l, sizeof(l), "WiFi  %s", cfg.hasWifi() ? ssid.c_str() : "未配置");
-    snprintf(r, sizeof(r), "IP    %s", WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "-");
-    canvas.drawString(l, 8, yy); canvas.drawString(r, 120, yy); yy += 18;
-    snprintf(l, sizeof(l), "时段  %s", cfg.peakCount > 0 ? "自定义" : "官方默认");
-    int batt = M5.Power.getBatteryLevel();
-    snprintf(r, sizeof(r), "电量  %d%%", batt < 0 ? 0 : batt);
-    canvas.drawString(l, 8, yy); canvas.drawString(r, 120, yy); yy += 18;
-    snprintf(l, sizeof(l), "方向  %d° %s", curRotation * 90, cfg.autoRotate ? "自动" : "固定");
-    snprintf(r, sizeof(r), "固件  v%s", FW_VERSION);
-    canvas.drawString(l, 8, yy); canvas.drawString(r, 120, yy);
-    return;
-  }
-
-  // ---- 竖屏 135×240（原布局）----
-
-  // 标题
-  canvas.setFont(&fonts::efontCN_12);
-  canvas.setTextDatum(middle_center);
-  canvas.setTextColor(CLR_DIM);
-  canvas.drawString("余额详情", canvas.width() / 2, 10);
-
-  // 余额大字
-  canvas.setFont(&fonts::efontCN_24);
-  canvas.setTextColor(balColor);
-  canvas.drawString(bbuf, canvas.width() / 2, 46);
-
-  // 余额状态
-  canvas.setFont(&fonts::efontCN_12);
-  if (!cfg.apiKey.length()) {
-    canvas.setTextColor(CLR_WARN);
-    canvas.drawString("未配置 API Key", canvas.width() / 2, 74);
-  } else if (balanceValid && balanceExpired) {
-    canvas.setTextColor(CLR_WARN);
-    canvas.drawString("查询失败 · 显示旧数据", canvas.width() / 2, 74);
-  } else if (balanceValid) {
-    canvas.setTextColor(CLR_OFF);
-    canvas.drawString("查询正常", canvas.width() / 2, 74);
-  } else {
-    canvas.setTextColor(CLR_WARN);
-    canvas.drawString("等待首次查询", canvas.width() / 2, 74);
-  }
-
-  // 详情行
-  int y = 96;
-  canvas.setTextDatum(middle_left);
-  canvas.setTextColor(CLR_DIM);
-  char line[64];
-  snprintf(line, sizeof(line), "WiFi  %s", cfg.hasWifi() ? cfg.ssid.c_str() : "未配置");
-  canvas.drawString(line, 10, y); y += 18;
-  snprintf(line, sizeof(line), "IP    %s", WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "-");
-  canvas.drawString(line, 10, y); y += 18;
-  snprintf(line, sizeof(line), "NTP   %s", cfg.ntp.c_str());
-  canvas.drawString(line, 10, y); y += 18;
-  snprintf(line, sizeof(line), "时段  %s", cfg.peakCount > 0 ? "自定义" : "官方默认");
-  canvas.drawString(line, 10, y); y += 18;
-  snprintf(line, sizeof(line), "固件  v%s · %s", FW_VERSION, MODEL_NAME);
-  canvas.drawString(line, 10, y); y += 18;
-  int batt = M5.Power.getBatteryLevel();
-  snprintf(line, sizeof(line), "电量  %d%%", batt < 0 ? 0 : batt);
-  canvas.drawString(line, 10, y); y += 18;
-  snprintf(line, sizeof(line), "方向  %d° %s", curRotation * 90, cfg.autoRotate ? "自动" : "固定");
-  canvas.drawString(line, 10, y); y += 18;
-
-  canvas.setTextDatum(middle_center);
-  canvas.setTextColor(CLR_DIM);
-  canvas.drawString("KEY2 返回", canvas.width() / 2, 228);
-}
-
-void updateDisplay() {
-  time_t now = time(nullptr);
-  bool synced = now > 1600000000L;
+  time_t nowSec = time(nullptr);
+  const bool synced = nowSec > 1600000000L;
   if (synced != timeSynced) {
     timeSynced = synced;
-    fullRedraw = true;
+    dirty = true;
   }
-
-  // 计算当前帧内容快照（字符串预先算好，渲染函数直接用，避免重复 snprintf）
-  struct tm tmv;
-  localtime_r(&now, &tmv);
-  int md = tmv.tm_hour * 60 + tmv.tm_min;
-  bool peak = synced &&
-              inPeakWindow(cfg, tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-                           tmv.tm_wday, md);
-
-  FrameSnap cur;
-  memset(&cur, 0, sizeof(cur));
+  m.timeSynced = synced;
+  m.schedule = toPeakSchedule(cfg);
   if (synced) {
-    snprintf(cur.time, sizeof(cur.time), "%02d:%02d:%02d %02d-%02d %s",
-             tmv.tm_hour, tmv.tm_min, tmv.tm_sec, tmv.tm_mon + 1, tmv.tm_mday,
-             weekdayCn(tmv.tm_wday));
-    long secs = secondsToNextSwitch(cfg, now);
-    if (secs < 0) secs = 0;
-    snprintf(cur.countdown, sizeof(cur.countdown), "%02ld:%02ld:%02ld",
-             secs / 3600, (secs / 60) % 60, secs % 60);
-    cur.peakImg = peak ? 1 : 2;
+    liangzi::BeijingDateTime dt;
+    liangzi::epochToBeijingDateTime(static_cast<int64_t>(nowSec), dt);
+    m.year = dt.year;
+    m.month = dt.month;
+    m.day = dt.day;
+    m.wday = dt.wday;
+    m.hour = dt.hour;
+    m.minute = dt.minute;
+    m.second = dt.second;
+    m.phaseKind = liangzi::classifyPhase(m.schedule, true, dt);
+    m.countdownSec = liangzi::secondsToNextSwitch(m.schedule, static_cast<int64_t>(nowSec));
   } else {
-    snprintf(cur.time, sizeof(cur.time), "--:--:-- 等待同步");
-    snprintf(cur.countdown, sizeof(cur.countdown), "--:--:--");
-    cur.peakImg = 0;
+    m.phaseKind = liangzi::PhaseKind::kUnsynced;
+    m.countdownSec = -1;
   }
-  if (!balanceValid) {
-    snprintf(cur.balance, sizeof(cur.balance), "--");
-    cur.lowBalance = false;
-  } else {
-    snprintf(cur.balance, sizeof(cur.balance), "%.2f元", balance);
-    cur.lowBalance = (balance < (double)cfg.balanceWarn);
-  }
-  cur.page = (uint8_t)page;
 
-  // diff：内容未变且无强制重绘信号时跳过整帧（消除无谓 CPU 负载 → 降发热）
-  bool changed = fullRedraw || !snapValid ||
-                 memcmp(&cur, &prevSnap, sizeof(FrameSnap)) != 0;
-  if (!changed) return;
+  m.balanceValid = balanceValid;
+  m.balanceExpired = balanceExpired;
+  m.balanceAvailable = balanceAvailable;
+  m.queryBusy = balanceBusy;
+  m.httpStatus = lastHttpStatus;
+  m.currency = currency;
+  m.totalBalance = balance;
+  m.grantedBalance = grantedBalance;
+  m.toppedUpBalance = toppedUpBalance;
+  m.hasSplit = hasSplit;
+  m.balanceWarn = cfg.balanceWarn;
+  m.lastDelta = lastDelta;
+  m.hasDelta = hasDelta;
+  m.lastFetchMs = static_cast<uint32_t>(lastBalanceFetch);
+  m.refreshIntervalMs = static_cast<uint32_t>(
+      inPeakWatch() ? PEAK_QUERY_INTERVAL_MS : BALANCE_INTERVAL_MS);
 
-  // 重绘到 canvas（内存），完成后一次性推屏幕（消除「擦除→绘制」闪屏）
-  canvas.fillScreen(CLR_BG);
-  if (page == 0) {
-    renderMainToCanvas(synced, now, cur);
-  } else {
-    renderInfoToCanvas(cur);
-  }
-  canvas.pushSprite(0, 0);
-
-  prevSnap = cur;
-  snapValid = true;
-  fullRedraw = false;
+  m.alertEnabled = cfg.alertEnabled;
+  m.mslAlertActive = mslAlertActive;
+  m.batteryPct = batteryPct;
+  m.charging = chargingState;
+  m.rotation = curRotation;
+  m.autoRotate = cfg.autoRotate;
+  m.holdBProgress = holdBProgress;
+  m.history = &balanceHistory;
+  m.dataRevision = dataRevision;
+  (void)nowMs;
+  return m;
 }
 
 // ---------- 按键 ----------
 
-void handleKeys() {
-  if (M5.BtnA.wasClicked()) {  // KEY1：立即刷新余额
-    if (cfg.apiKey.length()) {
-      balanceForce = true;
-      balanceValid = false;
+void handleKeys(uint32_t now) {
+  if (M5.BtnA.wasClicked()) {
+    // KEY1：保留当前余额不清空，触发顶栏青光扫屏与立即刷新
+    ui.triggerPulse(now);
+    if (cfg.apiKey.length()) balanceForce = true;
+    dirty = true;
+  }
+
+  if (M5.BtnB.wasPressed()) {
+    btnBDownAt = now;
+    btnBHoldFired = false;
+    holdBProgress = 0.0f;
+  }
+  if (M5.BtnB.wasHold()) {
+    btnBHoldFired = true;
+    holdBProgress = 0.0f;
+    if (cfg.autoRotate) {
+      ui.showToast("自动旋屏已开", now);
+    } else {
+      uint8_t nextRot = static_cast<uint8_t>((curRotation + 1u) & 3u);
+      cfg.screenRotation = nextRot;
+      applyRotation(nextRot);
+      cfgSave(cfg, prefs);
+      sendState();
+    }
+    dirty = true;
+  } else if (M5.BtnB.isPressed() && !btnBHoldFired) {
+    const unsigned long held = now - btnBDownAt;
+    const float nextProg = (held >= 150UL)
+                               ? std::min(1.0f, static_cast<float>(held - 150UL) / 550.0f)
+                               : 0.0f;
+    if (nextProg != holdBProgress) {
+      holdBProgress = nextProg;
+      dirty = true;
     }
   }
-  if (M5.BtnB.wasClicked()) {  // KEY2：切换页面
-    page = 1 - page;
-    fullRedraw = true;
+  if (M5.BtnB.wasReleased() && holdBProgress > 0.0f) {
+    holdBProgress = 0.0f;
+    dirty = true;
+  }
+  if (M5.BtnB.wasClicked()) {
+    ui.nextPage(now);
+    dirty = true;
   }
 }
 
-// ---------- 提示音事件 ----------
+// ---------- 提示音事件（ADR-0004）----------
 
-// 高峰边沿 → 敌跟踪音一次；离开高峰/关闭开关 → 停止持续敌导弹音
 void manageAlert() {
   time_t now = time(nullptr);
   bool synced = now > 1600000000L;
-  int img = 0;  // 0=未同步 1=峰 2=谷
+  int img = 0;
   if (synced) {
-    struct tm tmv;
-    localtime_r(&now, &tmv);
-    img = inPeakWindow(cfg, tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
-                       tmv.tm_wday, tmv.tm_hour * 60 + tmv.tm_min)
-              ? 1
-              : 2;
+    liangzi::BeijingDateTime dt;
+    liangzi::epochToBeijingDateTime(static_cast<int64_t>(now), dt);
+    img = inPeakWindow(cfg, dt.year, dt.month, dt.day, dt.wday, dt.minuteOfDay) ? 1 : 2;
   }
 
   if (cfg.alertEnabled) {
-    // 非高峰 → 高峰 翻转时播敌跟踪音（上电首帧 prevPeak=-1 不触发）
     if (img == 1 && prevPeak == 2) playAlert(AL_LOCK);
   }
   if (img != 0) prevPeak = img;
 
-  // 离开高峰（或未同步、或开关关闭）→ 停止持续告警
   if (mslAlertActive && (!cfg.alertEnabled || img != 1)) {
     mslAlertActive = false;
     stopAlert();
@@ -841,46 +634,24 @@ void manageAlert() {
 
 void setup() {
   auto m5cfg = M5.config();
-  M5.begin(m5cfg);  // 内部默认启用 IMU（BMI270，见 M5Unified.cpp:2866）
+  M5.begin(m5cfg);  // 保留内置 IMU 与 Speaker（ADR-0004 / ADR-0005）
   M5.Display.setBrightness(160);
-  M5.Speaker.setVolume(96);   // 提示音音量（电池供电安全音量）
+  M5.Speaker.setVolume(96);
 
   Serial.begin(115200);
   delay(300);
 
   cfgLoad(cfg, prefs);
-
-  // 屏幕方向：按配置的默认方向启动（autoRotate 开启时后续由重力判定接管）
   curRotation = (uint8_t)cfg.screenRotation;
   M5.Display.setRotation(curRotation);
+  ui.begin(&M5.Display, M5.Display.width(), M5.Display.height(), true);
+  M5.BtnB.setHoldThresh(700);
 
-  // 创建双缓冲帧缓冲（尺寸跟随当前方向；StickS3 有 8MB OPI PSRAM，
-  // 优先用 PSRAM 存放，竖屏 135×240×2=64.8KB）
-  canvas.setPsram(true);
-  if (!canvas.createSprite(M5.Display.width(), M5.Display.height())) {
-    // PSRAM 不可用时退回内部 RAM
-    canvas.setPsram(false);
-    canvas.createSprite(M5.Display.width(), M5.Display.height());
+  balanceReqQ = xQueueCreate(1, sizeof(BalanceJob *));
+  balanceRespQ = xQueueCreate(1, sizeof(BalanceResponse *));
+  if (balanceReqQ && balanceRespQ) {
+    xTaskCreatePinnedToCore(balanceTask, "lz-balance", 12288, nullptr, 1, nullptr, 0);
   }
-
-  // 预渲染峰谷大字 sprite（一次性，开机后不变）
-  // 从稀疏像素表 drawPixel 填入，之后显示时 pushSprite 一次拷贝到主 canvas
-  const struct PeakPixel *tables[2] = { PEAK_WENFENG, PEAK_WENGU };
-  const int counts[2] = { PEAK_WENFENG_N, PEAK_WENGU_N };
-  for (int i = 0; i < 2; i++) {
-    peakSprite[i].setPsram(true);
-    if (!peakSprite[i].createSprite(PEAK_W, PEAK_H)) {
-      peakSprite[i].setPsram(false);
-      peakSprite[i].createSprite(PEAK_W, PEAK_H);
-    }
-    peakSprite[i].fillScreen(CLR_BG);
-    for (int j = 0; j < counts[i]; j++) {
-      peakSprite[i].drawPixel(tables[i][j].x, tables[i][j].y, tables[i][j].c);
-    }
-  }
-
-  Serial.begin(115200);
-  delay(300);
 
   if (cfg.hasWifi()) {
     WiFi.mode(WIFI_STA);
@@ -896,20 +667,41 @@ void setup() {
 
 void loop() {
   M5.update();
-  handleKeys();
+  const uint32_t now = millis();
+
+  handleKeys(now);
   pumpSerial();
   manageWiFi();
   manageNtp();
-  manageBalance();
-  manageRotation();  // 重力感应旋屏（仅 autoRotate 开启时生效，ADR-0005）
-  manageAlert();     // 提示音事件（高峰边沿/停止条件）
-  alertTick();       // 告警音播放状态机（非阻塞）
-  if (millis() - lastStateSend > STATE_INTERVAL_MS) {
-    lastStateSend = millis();
+  acceptBalanceResponse(now);
+  scheduleBalanceRequest(now);
+  manageRotation();
+  manageAlert();
+  alertTick();
+
+  if (now - lastPowerPoll >= 5000UL || lastPowerPoll == 0) {
+    batteryPct = M5.Power.getBatteryLevel();
+    chargingState = M5.Power.isCharging();
+    wifiRssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -127;
+    lastPowerPoll = now;
+  }
+
+  if (now - lastStateSend > STATE_INTERVAL_MS) {
+    lastStateSend = now;
     sendState();
   }
-  if (millis() - lastDisplayTick > 500) {  // 显示刷新节流 500ms
-    lastDisplayTick = millis();
-    updateDisplay();
+
+  const liangzi::UiModel model = buildUiModel(now);
+  const uint32_t interval = ui.recommendedFrameIntervalMs(model, now);
+  if (dirty || (now - lastDisplayTick >= interval)) {
+    ui.render(model, now, true);
+    lastDisplayTick = now;
+    dirty = false;
+  }
+
+  if (alertKind != AL_NONE || Serial.available()) {
+    delay(2);
+  } else {
+    delay(interval <= 50u ? 2 : 10);
   }
 }
