@@ -24,6 +24,7 @@ Arduino 开发知识库，事实来源均为 M5Stack 官方文档，未核实项
 | [ionbridge-metrics.md](ionbridge-metrics.md) | 小电拼 IonBridge 本地 `/metrics` 与 `/metrics.json`：端口/协议枚举、单位、Prometheus 抓取与实机兼容性 |
 | [lib-usbhid.md](lib-usbhid.md) | core 3.3.8 自带 USB HID 键盘（USBHIDKeyboard，ESP32-S3 原生 USB），含 Windows 关机快捷键示例 |
 | [lib-tinyusb-usb.md](lib-tinyusb-usb.md) | **TinyUSB 实战**（真机验证）：MSC 虚拟 U 盘（跨扇区 READ10 坑、Windows 缓存限制）、USBHIDVendor 双向通道（OUTPUT→feature 路由坑）、主机调试方法 |
+| [ui-frameworks.md](ui-frameworks.md) | M5Stack UI 框架与渲染方案调研（M5GFX 进阶 / smooth_ui_toolkit / Clay / LVGL v9 / SDL2 预览），含 StickS3 与无 PSRAM Cardputer-Adv 避坑 |
 ## 外部参考仓库（submodule）
 
 | 目录 | 仓库 | 说明 |
