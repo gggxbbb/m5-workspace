@@ -1,7 +1,7 @@
 # `minecraft-motd` StickS3 旗舰级 UI 重构方案
 
 > **适用项目**：`minecraft-motd`（M5StickS3，`240×135` 双横屏，8 MB OPI PSRAM，250 mAh 电池）
-> **状态**：规划文档（待实施）
+> **状态**：已实现并刷写至 StickS3（`COM9`）；已完成固件编译、协议单测与真实 `M5GFX` 8 屏渲染核验，待手动复位退出下载模式后做实机视觉/串口终验
 > **底层参考**：[ui-frameworks.md](../../kb/ui-frameworks.md)、[lib-m5gfx.md](../../kb/lib-m5gfx.md)、[m5stick-s3.md](../../kb/m5stick-s3.md)
 
 ---

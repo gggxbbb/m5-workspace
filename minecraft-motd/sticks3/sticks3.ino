@@ -3,24 +3,22 @@
 #include <Preferences.h>
 #include <MinecraftMotd.h>
 #include <MotdSettings.h>
+#include <MotdUi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include <algorithm>
+#include <deque>
 #include <memory>
 #include <new>
-#include <deque>
 
 namespace {
 
-constexpr uint32_t kBackground = 0x0D1720;
-constexpr uint32_t kForeground = 0xE5EDF2;
-constexpr uint32_t kMuted = 0xA8BAC8;
-constexpr uint32_t kGreen = 0x76DFAA;
-constexpr uint32_t kRed = 0xFF8080;
-constexpr uint32_t kLine = 0x2B3B48;
+constexpr uint32_t kBackground = 0x090D12;
+constexpr uint32_t kRed = 0xF87171;
 
-M5Canvas canvas(&M5.Display);
+motd::MotdUi ui;
+motd::TelemetryHistory history;
 Preferences preferences;
 QueueHandle_t requests;
 QueueHandle_t responses;
@@ -29,6 +27,10 @@ minecraft::Settings settings;
 struct ProbeJob { minecraft::Settings settings; uint32_t generation; };
 struct ProbeResponse { minecraft::Result result; uint32_t generation; };
 uint32_t generation = 0;
+uint32_t resultRevision = 0;
+int32_t prevOnline = -1;
+int32_t playerDelta = 0;
+uint32_t playerDeltaAt = 0;
 std::string serialInput;
 std::deque<std::string> serialOutput;
 size_t serialOffset = 0;
@@ -36,7 +38,6 @@ uint32_t serialInputAt = 0;
 uint32_t stateAt = 0;
 bool inputOversize = false;
 uint8_t rotation = 1;
-bool details = false;
 bool busy = false;
 bool discardResponse = false;
 bool forceRefresh = true;
@@ -44,10 +45,13 @@ bool wifiWasConnected = false;
 bool configured = false;
 uint32_t finishedAt = 0;
 uint32_t wifiAttemptAt = 0;
-uint32_t animationAt = 0;
 uint32_t lastPaintAt = 0;
 uint32_t batteryAt = 0;
 int battery = -1;
+bool charging = false;
+uint32_t btnBDownAt = 0;
+bool btnBHoldFired = false;
+float holdBProgress = 0.0f;
 bool dirty = true;
 
 class WifiTransport final : public minecraft::Transport {
@@ -128,158 +132,6 @@ void queryTask(void*) {
   }
 }
 
-void label(const char* text, int x, int y, uint32_t color = kForeground,
-           const lgfx::IFont* font = &fonts::efontCN_12) {
-  canvas.setFont(font);
-  canvas.setTextColor(color, kBackground);
-  canvas.drawString(text, x, y);
-}
-
-void rightLabel(const char* text, int right, int y, uint32_t color = kMuted,
-                const lgfx::IFont* font = &fonts::efontCN_12) {
-  canvas.setFont(font);
-  label(text, right - canvas.textWidth(text), y, color, font);
-}
-
-void clippedLabel(const std::string& text, int x, int y, int width,
-                  uint32_t color, const lgfx::IFont* font = &fonts::efontCN_12) {
-  canvas.setClipRect(x, y, width, 18);
-  label(text.c_str(), x, y, color, font);
-  canvas.clearClipRect();
-}
-
-int motdWidth(const minecraft::Line& line) {
-  canvas.setFont(&fonts::efontCN_14);
-  int width = 0;
-  for (const auto& span : line) width += canvas.textWidth(span.text.c_str());
-  return width;
-}
-
-void drawMotdLine(const minecraft::Line& line, int y, uint32_t elapsed) {
-  const int overflow = std::max(0, motdWidth(line) - 224);
-  int offset = 0;
-  if (overflow) {
-    const uint32_t movement = uint32_t(overflow) * 45;
-    const uint32_t cycle = elapsed % (movement * 2 + 3000);
-    if (cycle > 1500 && cycle <= movement + 1500) offset = (cycle - 1500) / 45;
-    else if (cycle > movement + 1500 && cycle <= movement + 3000) offset = overflow;
-    else if (cycle > movement + 3000) offset = overflow - (cycle - movement - 3000) / 45;
-  }
-  int x = 8 - offset;
-  canvas.setClipRect(8, y, 224, 18);
-  for (const auto& span : line) {
-    canvas.setTextColor(span.color, kBackground);
-    canvas.drawString(span.text.c_str(), x, y);
-    x += canvas.textWidth(span.text.c_str());
-  }
-  canvas.clearClipRect();
-}
-
-void drawHeader(bool connected) {
-  const char* state = "Waiting";
-  uint32_t color = kMuted;
-  if (!configured) { state = "Setup"; color = kRed; }
-  else if (!connected) { state = "Wi-Fi"; color = kRed; }
-  else if (busy) { state = "Querying"; }
-  else if (result && result->complete) { state = "Online"; color = kGreen; }
-  else if (result && result->statusReceived) { state = "Pong failed"; color = kRed; }
-  else if (result) { state = "Query failed"; color = kRed; }
-  canvas.fillCircle(10, 9, 2, color);
-  label(state, 17, 2, color, &fonts::efontCN_10);
-  char text[40];
-  if (battery >= 0) snprintf(text, sizeof(text), "%s  %d%%", connected ? "Wi-Fi" : "--", battery);
-  else snprintf(text, sizeof(text), "%s  --", connected ? "Wi-Fi" : "--");
-  rightLabel(text, 232, 2, kMuted, &fonts::efontCN_10);
-}
-
-void timing(const char* name, int32_t value, int x, int y) {
-  label(name, x, y, kMuted);
-  char text[32];
-  if (value < 0) snprintf(text, sizeof(text), "--");
-  else snprintf(text, sizeof(text), "%ld ms", static_cast<long>(value));
-  label(text, x, y + 15, kForeground, &fonts::Font0);
-}
-
-void drawScreen(uint32_t now, bool connected) {
-  canvas.fillSprite(kBackground);
-  drawHeader(connected);
-  if (!configured) {
-    label("Configure with desktop app", 8, 38, kForeground, &fonts::efontCN_14);
-    label("Connect USB to your PC", 8, 63, kMuted);
-  } else if (!connected) {
-    label(now - wifiAttemptAt < 15000 ? "Connecting to Wi-Fi" : "Wi-Fi connection failed", 8, 38,
-          now - wifiAttemptAt < 15000 ? kForeground : kRed, &fonts::efontCN_14);
-    label("A Reconnect", 8, 63, kMuted);
-  } else if (details) {
-    label("Query details", 8, 21, kForeground, &fonts::efontCN_14);
-    if (result) {
-      clippedLabel(result->address + ":" + std::to_string(settings.port), 8, 41, 224, kMuted);
-      timing("DNS", result->dnsMs, 8, 60);
-      timing("TCP", result->tcpMs, 120, 60);
-      timing("Status", result->statusMs, 8, 88);
-      timing("Ping/Pong", result->pongMs, 120, 88);
-    } else {
-      label(busy ? "Querying server" : "Waiting for query", 8, 56, kMuted);
-    }
-  } else {
-    clippedLabel(settings.host, 8, 23, 164, kForeground, &fonts::efontCN_14);
-    char latency[24];
-    if (result && result->pongMs >= 0) snprintf(latency, sizeof(latency), "%ld ms", static_cast<long>(result->pongMs));
-    else snprintf(latency, sizeof(latency), "-- ms");
-    rightLabel(latency, 232, 24, kGreen);
-    if (result && result->statusReceived) {
-      const size_t pages = (result->lines.size() + 1) / 2;
-      std::vector<uint32_t> durations;
-      uint32_t totalDuration = 0;
-      for (size_t page = 0; page < pages; ++page) {
-        int overflow = 0;
-        for (size_t i = page * 2; i < std::min(page * 2 + 2, result->lines.size()); ++i) {
-          overflow = std::max(overflow, motdWidth(result->lines[i]) - 224);
-        }
-        const uint32_t duration = std::max(uint32_t(6000), uint32_t(overflow) * 90 + 3000);
-        durations.push_back(duration);
-        totalDuration += duration;
-      }
-      uint32_t elapsed = totalDuration ? (now - animationAt) % totalDuration : 0;
-      size_t page = 0;
-      while (page + 1 < pages && elapsed >= durations[page]) elapsed -= durations[page++];
-      for (size_t i = 0; i < 2; ++i) {
-        const size_t index = page * 2 + i;
-        if (index < result->lines.size()) drawMotdLine(result->lines[index], 50 + i * 20, elapsed);
-      }
-      char players[40];
-      if (result->online >= 0) snprintf(players, sizeof(players), "%ld / %ld", static_cast<long>(result->online), static_cast<long>(result->maximum));
-      else snprintf(players, sizeof(players), "-- / --");
-      canvas.setClipRect(8, 96, 120, 16);
-      label(players, 8, 96);
-      canvas.clearClipRect();
-      canvas.setClipRect(132, 96, 100, 16);
-      rightLabel(result->version.c_str(), 232, 96);
-      canvas.clearClipRect();
-    } else if (result) {
-      const std::string error = std::string(minecraft::stageName(result->stage)) + ": " + result->error;
-      canvas.setFont(&fonts::efontCN_14);
-      canvas.setTextColor(kRed, kBackground);
-      canvas.setTextWrap(true);
-      canvas.setClipRect(8, 48, 224, 60);
-      canvas.setCursor(8, 48);
-      canvas.print(error.c_str());
-      canvas.clearClipRect();
-      canvas.setTextWrap(false);
-    } else {
-      label(busy ? "Querying server" : "Waiting for query", 8, 56, kMuted, &fonts::efontCN_14);
-    }
-  }
-  canvas.drawFastHLine(8, 116, 224, kLine);
-  label(details ? "A Refresh  B Back" : "A Refresh  B Details", 8, 120, kMuted, &fonts::efontCN_10);
-  char age[24];
-  if (busy) snprintf(age, sizeof(age), "Querying");
-  else if (result) snprintf(age, sizeof(age), "%lus ago", static_cast<unsigned long>((now - finishedAt) / 1000));
-  else snprintf(age, sizeof(age), "%d°", rotation * 90);
-  rightLabel(age, 232, 120, kMuted, &fonts::efontCN_10);
-  canvas.pushSprite(0, 0);
-}
-
 void sendJson(const JsonDocument& json) {
   std::string output;
   serializeJson(json, output);
@@ -330,7 +182,13 @@ void applySettings(minecraft::Settings config) {
   rotation = settings.rotation;
   if (queryChanged) {
     ++generation;
+    ++resultRevision;
     result.reset();
+    history.clear();
+    prevOnline = -1;
+    playerDelta = 0;
+    playerDeltaAt = 0;
+    ui.resetMotdCycle(millis());
     if (busy) discardResponse = true;
     forceRefresh = true;
   }
@@ -459,13 +317,46 @@ void acceptResponse(uint32_t now, bool connected) {
   result.reset(new (std::nothrow) minecraft::Result(std::move(response->result)));
   delete response;
   if (!result) fatal("Failed to allocate query result");
+
+  history.push(motd::TelemetrySample{result->pongMs, result->online, result->complete, now});
+  if (result->statusReceived && result->online >= 0) {
+    if (prevOnline >= 0 && result->online != prevOnline) {
+      playerDelta = result->online - prevOnline;
+      playerDeltaAt = now;
+    }
+    prevOnline = result->online;
+  }
+  ++resultRevision;
   finishedAt = now;
-  animationAt = now;
+  ui.resetMotdCycle(now);
   if (serialOutput.size() < 3) sendState(true);
   dirty = true;
 }
 
+motd::UiModel buildModel() {
+  motd::UiModel m;
+  m.configured = configured;
+  m.wifiConnected = configured && WiFi.status() == WL_CONNECTED;
+  m.busy = busy;
+  m.charging = charging;
+  m.batteryPct = battery;
+  m.rotationDeg = static_cast<uint16_t>(rotation * 90);
+  m.wifiAttemptAt = wifiAttemptAt;
+  m.finishedAt = finishedAt;
+  m.refreshMs = settings.refreshMs;
+  m.holdBProgress = holdBProgress;
+  m.host = settings.host;
+  m.port = settings.port;
+  m.protocol = settings.protocol;
+  m.result = result.get();
+  m.resultRevision = resultRevision;
+  m.playerDelta = playerDelta;
+  m.playerDeltaAt = playerDeltaAt;
+  m.history = &history;
+  return m;
 }
+
+}  // namespace
 
 void setup() {
   auto config = M5.config();
@@ -487,9 +378,7 @@ void setup() {
   M5.Display.setRotation(rotation);
   if (M5.Display.width() != 240 || M5.Display.height() != 135) fatal("Invalid display dimensions");
   M5.Display.setBrightness(settings.brightness);
-  canvas.setColorDepth(16);
-  if (!canvas.createSprite(240, 135)) fatal("Failed to allocate display buffer");
-  canvas.setTextWrap(false);
+  if (!ui.begin(&M5.Display, true)) fatal("Failed to allocate display buffer");
   M5.BtnB.setHoldThresh(700);
   requests = xQueueCreate(1, sizeof(ProbeJob*));
   responses = xQueueCreate(1, sizeof(ProbeResponse*));
@@ -510,11 +399,39 @@ void loop() {
   const uint32_t now = millis();
   serialLoop(now);
   const bool connected = configured && WiFi.status() == WL_CONNECTED;
-  if (M5.BtnB.wasHold()) rotateScreen();
-  if (M5.BtnB.wasClicked()) { details = !details; dirty = true; }
+
+  if (M5.BtnB.wasPressed()) {
+    btnBDownAt = now;
+    btnBHoldFired = false;
+    holdBProgress = 0.0f;
+  }
+  if (M5.BtnB.wasHold()) {
+    btnBHoldFired = true;
+    holdBProgress = 0.0f;
+    rotateScreen();
+  } else if (M5.BtnB.isPressed() && !btnBHoldFired) {
+    const uint32_t held = now - btnBDownAt;
+    const float nextProg = (held >= 150u) ? std::min(1.0f, static_cast<float>(held - 150u) / 550.0f) : 0.0f;
+    if (nextProg != holdBProgress) {
+      holdBProgress = nextProg;
+      dirty = true;
+    }
+  }
+  if (M5.BtnB.wasReleased()) {
+    if (holdBProgress > 0.0f) {
+      holdBProgress = 0.0f;
+      dirty = true;
+    }
+  }
+  if (M5.BtnB.wasClicked()) {
+    ui.nextPage(now);
+    dirty = true;
+  }
+
   if (connected != wifiWasConnected) {
     if (!connected) {
       result.reset();
+      ++resultRevision;
       if (busy) discardResponse = true;
     }
     wifiWasConnected = connected;
@@ -522,6 +439,7 @@ void loop() {
     dirty = true;
   }
   if (M5.BtnA.wasClicked() && configured) {
+    ui.triggerPulse(now);
     if (connected) { if (!busy) forceRefresh = true; }
     else { WiFi.disconnect(); WiFi.begin(settings.ssid.c_str(), settings.password.c_str()); wifiAttemptAt = now; }
     dirty = true;
@@ -537,10 +455,14 @@ void loop() {
   }
   if (now - batteryAt >= 5000 || batteryAt == 0) {
     battery = M5.Power.getBatteryLevel();
+    charging = M5.Power.isCharging();
     batteryAt = now;
   }
-  if (dirty || now - lastPaintAt >= 100) {
-    drawScreen(now, connected);
+
+  const motd::UiModel model = buildModel();
+  const uint32_t frameInterval = ui.recommendedFrameIntervalMs(model, now);
+  if (dirty || now - lastPaintAt >= frameInterval) {
+    ui.render(model, now, true);
     dirty = false;
     lastPaintAt = now;
   }
@@ -548,5 +470,5 @@ void loop() {
     sendState(false);
     stateAt = now;
   }
-  delay(5);
+  delay(frameInterval <= 50 ? 2 : 8);
 }

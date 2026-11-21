@@ -90,9 +90,114 @@ bool number(const char* text, long minimum, long maximum, long& output) {
   return text != end && *end == '\0' && output >= minimum && output <= maximum;
 }
 
+int runSelfTest() {
+  using namespace minecraft;
+  // 1. JSON component inheritance + bold/italic/underlined/strikethrough/obfuscated + override false
+  {
+    Result r;
+    const char* raw = R"({
+      "version": {"name": "1.21.4", "protocol": 769},
+      "players": {
+        "online": 2,
+        "max": 20,
+        "sample": [
+          {"name": "\u00a7aSteve\u00a7r", "id": "1"},
+          {"name": "  \u00a7x\u00a7f\u00a70\u00a70\u00a70\u00a7f\u00a7fAlex  ", "id": "2"},
+          {"bad": 123},
+          {"name": "\u00a7k"},
+          {"name": "Builder_With_A_Very_Long_Username_12345", "id": "3"}
+        ]
+      },
+      "description": {
+        "text": "Top ",
+        "color": "green",
+        "bold": true,
+        "extra": [
+          {"text": "Child", "underlined": true},
+          {"text": " Plain", "bold": false, "italic": true, "strikethrough": true},
+          {"text": " Obf", "obfuscated": true}
+        ]
+      },
+      "favicon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    })";
+    if (!parseStatusJson(raw, r) || !r.statusReceived) {
+      std::fprintf(stderr, "self-test 1 failed: %s\n", r.error.c_str());
+      return 1;
+    }
+    if (r.lines.size() != 1 || r.lines[0].size() != 4) {
+      std::fprintf(stderr, "self-test 1 span count mismatch\n");
+      return 1;
+    }
+    if (r.lines[0][0].color != 0x55FF55 || r.lines[0][0].style != Style::kBold ||
+        r.lines[0][1].style != (Style::kBold | Style::kUnderlined) ||
+        r.lines[0][2].style != (Style::kItalic | Style::kStrikethrough) ||
+        r.lines[0][3].style != (Style::kBold | Style::kObfuscated)) {
+      std::fprintf(stderr, "self-test 1 style mismatch\n");
+      return 1;
+    }
+    if (r.faviconPng.size() < 24 || r.faviconPng[0] != 0x89 || r.faviconPng[1] != 'P') {
+      std::fprintf(stderr, "self-test 1 favicon decode failed (%zu bytes)\n", r.faviconPng.size());
+      return 1;
+    }
+    if (r.playerSample.size() != 3 || r.playerSample[0] != "Steve" || r.playerSample[1] != "Alex" ||
+        r.playerSample[2].size() > 24) {
+      std::fprintf(stderr, "self-test 1 playerSample failed (%zu)\n", r.playerSample.size());
+      return 1;
+    }
+  }
+
+  // 2. Legacy § formatting, color resets formatting, §x RGB, §r reset
+  {
+    Result r;
+    const char* raw = R"({
+      "version": {"name": "1.20.4", "protocol": 765},
+      "description": "\u00a7l\u00a7nBoldUL\u00a7cRed\u00a7kObf\u00a7x\u00a71\u00a72\u00a73\u00a74\u00a75\u00a76RGB\u00a7rReset"
+    })";
+    if (!parseStatusJson(raw, r) || r.lines.size() != 1 || r.lines[0].size() != 5) {
+      std::fprintf(stderr, "self-test 2 failed\n");
+      return 1;
+    }
+    if (r.lines[0][0].style != (Style::kBold | Style::kUnderlined) ||
+        r.lines[0][1].color != 0xFF5555 || r.lines[0][1].style != Style::kNone ||
+        r.lines[0][2].style != Style::kObfuscated ||
+        r.lines[0][3].color != 0x123456 || r.lines[0][3].style != Style::kNone ||
+        r.lines[0][4].color != 0xFFFFFF || r.lines[0][4].style != Style::kNone) {
+      std::fprintf(stderr, "self-test 2 style/color transition mismatch\n");
+      return 1;
+    }
+  }
+
+  // 3. Invalid / oversized favicon & >16 sample cap must NOT fail statusReceived
+  {
+    std::string big(46000, 'A');
+    std::string raw = std::string(R"({"version":{"name":"1.20","protocol":47},"players":{"online":20,"max":100,"sample":[)") +
+                      R"({"name":"P1"},{"name":"P2"},{"name":"P3"},{"name":"P4"},{"name":"P5"},{"name":"P6"},)" +
+                      R"({"name":"P7"},{"name":"P8"},{"name":"P9"},{"name":"P10"},{"name":"P11"},{"name":"P12"},)" +
+                      R"({"name":"P13"},{"name":"P14"},{"name":"P15"},{"name":"P16"},{"name":"P17"}]})" +
+                      R"(,"description":"ok","favicon":"data:image/png;base64,)" + big + R"("})";
+    Result r;
+    if (!parseStatusJson(raw, r) || !r.faviconPng.empty() || r.playerSample.size() != 16) {
+      std::fprintf(stderr, "self-test 3 oversize/cap check failed\n");
+      return 1;
+    }
+    Result rBadMagic;
+    if (!parseStatusJson(R"({"version":{"name":"1.20","protocol":47},"description":"ok","favicon":"data:image/png;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"})", rBadMagic) ||
+        !rBadMagic.faviconPng.empty()) {
+      std::fprintf(stderr, "self-test 3 bad png magic check failed\n");
+      return 1;
+    }
+  }
+
+  std::puts("PASS: MinecraftMotd self-test (styles, section codes, favicon PNG & caps, playerSample)");
+  return 0;
+}
+
 }
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--self-test") {
+    return runSelfTest();
+  }
   if (argc == 2 && std::string(argv[1]) == "--validate-config") {
     std::string input;
     std::getline(std::cin, input);
@@ -137,10 +242,12 @@ int main(int argc, char** argv) {
               minecraft::stageName(result.stage), result.address.c_str());
   std::printf("dns=%ld tcp=%ld status=%ld pong=%ld ms\n", static_cast<long>(result.dnsMs),
               static_cast<long>(result.tcpMs), static_cast<long>(result.statusMs), static_cast<long>(result.pongMs));
-  std::printf("version=%s protocol=%ld players=%ld/%ld\n", result.version.c_str(), static_cast<long>(result.protocol),
-              static_cast<long>(result.online), static_cast<long>(result.maximum));
+  std::printf("version=%s protocol=%ld players=%ld/%ld favicon=%zuB samples=%zu\n",
+              result.version.c_str(), static_cast<long>(result.protocol),
+              static_cast<long>(result.online), static_cast<long>(result.maximum),
+              result.faviconPng.size(), result.playerSample.size());
   for (const auto& line : result.lines) {
-    for (const auto& span : line) std::printf("[%06lx]%s", static_cast<unsigned long>(span.color), span.text.c_str());
+    for (const auto& span : line) std::printf("[%06lx:%02x]%s", static_cast<unsigned long>(span.color), span.style, span.text.c_str());
     std::puts("");
   }
   if (!result.error.empty()) std::fprintf(stderr, "error=%s\n", result.error.c_str());

@@ -39,17 +39,25 @@ DNS 解析使用 ESP32 网络库的解析时限。域名使用 SRV 记录时，�
 
 ## 设备界面
 
-设备和上位机界面使用英文。主页面显示查询状态、电量、服务器地址、Ping/Pong 延迟、彩色 MOTD、在线人数、服务器版本和结果时间。MOTD 使用 M5GFX 内置字库显示中文。过长的 MOTD 行水平滚动，多行内容按两行分页；翻页时长随行宽增加。
+设备和上位机界面使用英文。采用基于 `M5GFX` 抗锯齿原语、PSRAM 多图层离屏合成与弹簧物理动效（`MotdUi`）的三页 Obsidian HUD 设计：
+
+| 页面 | 内容 |
+|---|---|
+| Page 0（Server Card） | 呼吸状态胶囊、Wi-Fi 与充电状态指示、`44×44` 圆角服务器 Favicon（自动提取主色作为卡片流光；无图标时显示像素风草方块）、主机名滚动、MC 原版 5 格信号条与等宽延迟、人数胶囊与进退服增量气泡、双行富文本 MOTD（带 1px 阴影、`bold`/`underlined`/`strikethrough`/`§k` 乱码跳动、左右 10px 渐变隐没遮罩与垂直弹簧翻页） |
+| Page 1（Trend & Players） | 最近 40 次 Ping 历史抗锯齿折线图（`min`/`avg`/`now` 及失败采样标记）、服务器可用率与 `players.sample` 玩家铭牌墙（无名单时优雅降级提示） |
+| Page 2（Network Waterfall） | 解析 IP、协议号、4 阶段耗时堆叠瀑布条（DNS / TCP / Status / Ping-Pong）与 `2×2` 诊断瓷砖 |
 
 | 操作 | 行为 |
 |---|---|
-| 短按 A 键 | 刷新查询；Wi-Fi 连接失败时重新连接 |
-| 短按 B 键 | 切换 MOTD 页面与耗时详情页面 |
-| 长按 B 键 700 毫秒 | 切换两个横屏方向并保存设置 |
+| 短按 A 键 | 刷新查询（顶栏触发蓝色扫描脉冲）；Wi-Fi 连接失败时重新连接 |
+| 短按 B 键 | 在 3 个页面间弹簧横滑切换 |
+| 长按 B 键 700 毫秒 | 弹出 `FLIP 180` 圆环蓄力条，满格后切换两个横屏方向并保存设置 |
 
-查询由独立 FreeRTOS 任务执行。修改配置、断开 Wi-Fi 后，设备丢弃旧查询结果。状态响应有效且 Pong 失败时，界面保留已收到的 MOTD，并标记 Pong 失败。每次失败均显示当前阶段和错误信息。
+刷新调度采用自适应帧率：动画、Marquee 滚动、`§k`、请求进行中或长按蓄力时以约 40 FPS（25 ms）渲染，静止后自动降频至 2 FPS（500 ms）省电。
 
-MOTD 支持字符串、JSON `text`、`extra`、数组、标准颜色、十六进制颜色和 `§` 颜色代码。`translate` 显示服务器返回的翻译键。字体样式使用统一字形。状态包限制为 128 KiB，MOTD 最多 64 行、512 个文字片段；超出限制时报告错误。
+查询由独立 FreeRTOS 任务执行。修改配置、断开 Wi-Fi 后，设备丢弃旧查询结果。状态响应有效且 Pong 失败时，界面保留已收到的 MOTD 与图标，并标记 `PONG ERR`。每次失败均显示当前阶段和错误信息。
+
+MOTD 支持字符串、JSON `text`、`extra`、数组、标准颜色、十六进制颜色、`§` 颜色与格式代码（`§k`/`§l`/`§m`/`§n`/`§o`/`§r`），以及 `favicon`（≤32 KiB PNG Base64 解码）与 `players.sample`（≤16 条）。`translate` 显示服务器返回的翻译键。状态包限制为 128 KiB，MOTD 最多 64 行、512 个文字片段；超出限制时报告错误。
 
 ## 编译与上传
 
@@ -85,8 +93,22 @@ Windows 原生查询工具与固件共用 `MinecraftMotd` 查询实现，通过 
 
 ```powershell
 cmd /c minecraft-motd\tools\native-probe\build.cmd
-minecraft-motd/.build/native/native-probe.exe SERVER_HOST SERVER_PORT
+minecraft-motd\.build\native\native-probe.exe --self-test
+minecraft-motd\.build\native\native-probe.exe SERVER_HOST SERVER_PORT
 python minecraft-motd/tools/verify_host.py SERVER_HOST SERVER_PORT
+```
+
+Windows 原生 UI 桌面模拟器与固件共用 `MotdUi` 与真实 `M5GFX` 渲染后端（2× 窗口，支持 `1-4` 预设、`A` 刷新、`B` 切页/长按翻转、`C` 切换充电状态），亦支持无头导出截图验证：
+
+```powershell
+cmd /c minecraft-motd\tools\ui-sim\build.cmd
+minecraft-motd\.build\native\ui-sim.exe --dump-dir minecraft-motd\.build\ui-preview
+```
+
+如需重新生成 `MotdUi` 内置的 4-bpp BFF 英文字体数组（依赖 Node.js `npx lv_font_conv`）：
+
+```powershell
+python minecraft-motd/tools/gen_fonts.py
 ```
 
 将 `SERVER_HOST` 和 `SERVER_PORT` 替换为待查询地址。`verify_host.py` 创建真实 Tk 窗口并隐藏窗口，验证两个方向、上位机字段、固件共用的配置校验代码和密码响应行为。
@@ -95,14 +117,16 @@ python minecraft-motd/tools/verify_host.py SERVER_HOST SERVER_PORT
 
 ## 验证结果
 
-2026-11-04 完成以下验证：
+2026-11-21（UI 重构版）完成以下验证：
 
-- StickS3 英文界面固件编译通过，程序占用 1,806,955 字节，约为应用分区的 54%；静态数据占用 49,616 字节。
-- 固件通过 COM9 刷写到 ESP32-S3-PICO-1，写入数据校验通过。
-- 英文固件实机 `get_config`、`get_state` 返回成功，已存配置加载、Wi-Fi 连接和服务器查询通过，查询阶段返回 `Done`。
-- 共用查询代码通过真实服务器查询，收到 `CSJ's Server`、版本 `1.20.1`、人数 `2/20`，测得 Ping/Pong 为 31 毫秒。
-- 上位机英文控件与提示文字、窗口初始化、两个方向、中文及空格名称、配置保存格式、密码保留和八项边界校验通过。
+- StickS3 新版 `MotdUi` 固件编译通过，程序占用 2,185,919 字节（约占应用分区的 65%）；全局静态内存占用 51,128 字节（15%，剩余 276,552 字节局部变量空间）。
+- 新版固件已通过 `COM9` 刷写至 StickS3（ESP32-S3-PICO-1，写入 2,186,064 字节，`Hash of data verified` 通过）；因该机无法自动退出下载模式，刷写后需手动按侧边复位键退出并完成联机验收。
+- `native-probe.exe --self-test` 通过：验证 JSON 组件样式继承、`§` 颜色/格式重置、`favicon` Base64 PNG 解码与越界安全丢弃、`players.sample` 解析与上限截断。
+- `verify_host.py` 英文界面与 8 项边界校验通过。
+- `ui-sim.exe --dump-dir` 真实 `M5GFX` 渲染导出 8 帧关键状态截图（含 3 页切换、真实 PNG Favicon 提取主色、无图标草方块兜底、中文阴影与边缘渐隐、`FLIP 180` 圆环蓄力与错误态）并通过人工视觉逐帧核验。
 
-设备已通过上位机完成网络与服务器配置，用户确认英文界面效果与实机服务器查询正常。
+2026-11-04 初版实机历史验收：
+
+- 英文固件实机 `get_config`、`get_state`、`Done` 状态查询（`CSJ's Server` / `1.20.1` / `2/20` / `31 ms`）及 USB 上位机读写均已实机通过。
 
 硬件接口以本工作区 `kb/` 为依据，查询顺序参考 [PrismarineJS 的 Ping 实现](https://github.com/PrismarineJS/node-minecraft-protocol/blob/master/src/ping.js)。

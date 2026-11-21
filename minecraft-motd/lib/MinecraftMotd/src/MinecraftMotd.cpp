@@ -10,6 +10,9 @@ namespace {
 constexpr size_t kMaxPacket = 131072;
 constexpr size_t kMaxSpans = 512;
 constexpr size_t kMaxLines = 64;
+constexpr size_t kMaxFaviconBytes = 32768;
+constexpr size_t kMaxPlayerSample = 16;
+constexpr size_t kMaxPlayerNameBytes = 24;
 constexpr uint32_t kColors[] = {
     0x000000, 0x0000AA, 0x00AA00, 0x00AAAA,
     0xAA0000, 0xAA00AA, 0xFFAA00, 0xAAAAAA,
@@ -90,64 +93,104 @@ class Motd {
  public:
   explicit Motd(Result& result) : result(result) { result.lines.emplace_back(); }
 
-  bool component(JsonVariantConst value, uint32_t inherited = 0xF1D27E, unsigned depth = 0) {
+  bool component(JsonVariantConst value, uint32_t inherited = 0xF1D27E,
+                 uint8_t inheritedStyle = Style::kNone, unsigned depth = 0) {
     if (depth > 32) return false;
-    if (value.is<const char*>()) return text(value.as<const char*>(), inherited);
+    if (value.is<const char*>()) return text(value.as<const char*>(), inherited, inheritedStyle);
     if (value.is<JsonArrayConst>()) {
-      uint32_t parent = inherited;
+      uint32_t parentColor = inherited;
+      uint8_t parentStyle = inheritedStyle;
       bool first = true;
       for (JsonVariantConst child : value.as<JsonArrayConst>()) {
-        if (first && child.is<JsonObjectConst>() && child["color"].is<const char*>()) {
-          if (!colorValue(child["color"].as<const char*>(), parent)) return false;
+        if (first && child.is<JsonObjectConst>()) {
+          JsonObjectConst obj = child.as<JsonObjectConst>();
+          if (obj["color"].is<const char*>() && !colorValue(obj["color"].as<const char*>(), parentColor)) {
+            return false;
+          }
+          applyJsonStyles(obj, parentStyle);
         }
-        if (!component(child, parent, depth + 1)) return false;
+        if (!component(child, parentColor, parentStyle, depth + 1)) return false;
         first = false;
       }
       return true;
     }
     if (!value.is<JsonObjectConst>()) return false;
+    JsonObjectConst obj = value.as<JsonObjectConst>();
     uint32_t color = inherited;
-    if (value["color"].is<const char*>() && !colorValue(value["color"].as<const char*>(), color)) return false;
-    if (!value["text"].isNull()) {
-      if (!value["text"].is<const char*>() || !text(value["text"].as<const char*>(), color)) return false;
-    } else if (!value["translate"].isNull()) {
-      if (!value["translate"].is<const char*>() || !text(value["translate"].as<const char*>(), color)) return false;
-    } else if (value["extra"].isNull()) {
+    uint8_t style = inheritedStyle;
+    if (obj["color"].is<const char*>() && !colorValue(obj["color"].as<const char*>(), color)) return false;
+    applyJsonStyles(obj, style);
+    if (!obj["text"].isNull()) {
+      if (!obj["text"].is<const char*>() || !text(obj["text"].as<const char*>(), color, style)) return false;
+    } else if (!obj["translate"].isNull()) {
+      if (!obj["translate"].is<const char*>() || !text(obj["translate"].as<const char*>(), color, style)) return false;
+    } else if (obj["extra"].isNull()) {
       return false;
     }
-    if (!value["extra"].isNull()) {
-      if (!value["extra"].is<JsonArrayConst>()) return false;
-      for (JsonVariantConst child : value["extra"].as<JsonArrayConst>()) {
-        if (!component(child, color, depth + 1)) return false;
+    if (!obj["extra"].isNull()) {
+      if (!obj["extra"].is<JsonArrayConst>()) return false;
+      for (JsonVariantConst child : obj["extra"].as<JsonArrayConst>()) {
+        if (!component(child, color, style, depth + 1)) return false;
       }
     }
     return true;
   }
 
  private:
-  bool append(const std::string& content, uint32_t color) {
+  static void applyJsonStyleFlag(JsonObjectConst obj, const char* key, uint8_t flag, uint8_t& style) {
+    if (obj[key].is<bool>()) {
+      if (obj[key].as<bool>()) style |= flag;
+      else style &= static_cast<uint8_t>(~flag);
+    }
+  }
+
+  static void applyJsonStyles(JsonObjectConst obj, uint8_t& style) {
+    if (obj["reset"].is<bool>() && obj["reset"].as<bool>()) style = Style::kNone;
+    applyJsonStyleFlag(obj, "bold", Style::kBold, style);
+    applyJsonStyleFlag(obj, "italic", Style::kItalic, style);
+    applyJsonStyleFlag(obj, "underlined", Style::kUnderlined, style);
+    applyJsonStyleFlag(obj, "strikethrough", Style::kStrikethrough, style);
+    applyJsonStyleFlag(obj, "obfuscated", Style::kObfuscated, style);
+  }
+
+  bool append(const std::string& content, uint32_t color, uint8_t style) {
     if (content.empty()) return true;
     if (++spans > kMaxSpans) return false;
-    result.lines.back().push_back({content, color});
+    result.lines.back().push_back({content, color, style});
     return true;
   }
 
-  bool text(const std::string& content, uint32_t color) {
+  bool text(const std::string& content, uint32_t color, uint8_t style) {
     std::string chunk;
     for (size_t i = 0; i < content.size(); ++i) {
       if (content[i] == '\n') {
-        if (!append(chunk, color) || result.lines.size() >= kMaxLines) return false;
+        if (!append(chunk, color, style) || result.lines.size() >= kMaxLines) return false;
         chunk.clear();
         result.lines.emplace_back();
       } else if (content[i] == '\r') {
         continue;
       } else if (content.compare(i, 2, "\xC2\xA7") == 0 && i + 2 < content.size()) {
-        if (!append(chunk, color)) return false;
+        if (!append(chunk, color, style)) return false;
         chunk.clear();
         char code = content[i + 2];
         const int digit = hexDigit(code);
-        if (digit >= 0) color = kColors[digit];
-        else if (code == 'r' || code == 'R') color = 0xFFFFFF;
+        if (digit >= 0) {
+          color = kColors[digit];
+          style = Style::kNone;
+        } else if (code == 'k' || code == 'K') {
+          style |= Style::kObfuscated;
+        } else if (code == 'l' || code == 'L') {
+          style |= Style::kBold;
+        } else if (code == 'm' || code == 'M') {
+          style |= Style::kStrikethrough;
+        } else if (code == 'n' || code == 'N') {
+          style |= Style::kUnderlined;
+        } else if (code == 'o' || code == 'O') {
+          style |= Style::kItalic;
+        } else if (code == 'r' || code == 'R') {
+          color = 0xFFFFFF;
+          style = Style::kNone;
+        }
         // BungeeCord 使用连续六组颜色代码表达 RGB 颜色。
         else if ((code == 'x' || code == 'X') && i + 20 < content.size()) {
           uint32_t rgb = 0;
@@ -157,6 +200,7 @@ class Motd {
             rgb = (rgb << 4) | hexDigit(content[position + 2]);
           }
           color = rgb;
+          style = Style::kNone;
           i += 18;
         }
         i += 2;
@@ -164,12 +208,109 @@ class Motd {
         chunk += content[i];
       }
     }
-    return append(chunk, color);
+    return append(chunk, color, style);
   }
 
   Result& result;
   size_t spans = 0;
 };
+
+int base64Digit(unsigned char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+
+void decodeFavicon(JsonVariantConst faviconVar, std::vector<uint8_t>& out) {
+  out.clear();
+  if (!faviconVar.is<const char*>()) return;
+  const char* src = faviconVar.as<const char*>();
+  static constexpr const char kPrefix[] = "data:image/png;base64,";
+  static constexpr size_t kPrefixLen = sizeof(kPrefix) - 1;
+  if (std::strncmp(src, kPrefix, kPrefixLen) != 0) return;
+
+  const char* p = src + kPrefixLen;
+  uint32_t accum = 0;
+  int bits = 0;
+  bool ended = false;
+  while (*p) {
+    unsigned char ch = static_cast<unsigned char>(*p++);
+    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') continue;
+    if (ch == '=') {
+      ended = true;
+      continue;
+    }
+    if (ended) {
+      out.clear();
+      return;
+    }
+    int val = base64Digit(ch);
+    if (val < 0) {
+      out.clear();
+      return;
+    }
+    accum = (accum << 6) | static_cast<uint32_t>(val);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      if (out.size() >= kMaxFaviconBytes) {
+        out.clear();
+        return;
+      }
+      out.push_back(static_cast<uint8_t>((accum >> bits) & 0xFF));
+    }
+  }
+  static constexpr uint8_t kPngMagic[8] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+  if (out.size() < 24 || std::memcmp(out.data(), kPngMagic, 8) != 0) {
+    out.clear();
+  }
+}
+
+std::string sanitizePlayerName(const char* raw) {
+  std::string cleaned;
+  if (!raw) return cleaned;
+  for (size_t i = 0; raw[i] != '\0'; ++i) {
+    unsigned char ch = static_cast<unsigned char>(raw[i]);
+    if (ch == 0xC2 && static_cast<unsigned char>(raw[i + 1]) == 0xA7 && raw[i + 2] != '\0') {
+      char code = raw[i + 2];
+      if ((code == 'x' || code == 'X') && std::strlen(raw + i) >= 21) {
+        i += 20;
+      } else {
+        i += 2;
+      }
+      continue;
+    }
+    if (ch < 0x20 || ch == 0x7F) continue;
+    if (cleaned.size() >= kMaxPlayerNameBytes) break;
+    // Do not split a multi-byte UTF-8 sequence when approaching the cap.
+    if (ch >= 0xC0) {
+      size_t seqLen = (ch >= 0xF0) ? 4 : (ch >= 0xE0) ? 3 : 2;
+      if (cleaned.size() + seqLen > kMaxPlayerNameBytes) break;
+    }
+    cleaned.push_back(static_cast<char>(ch));
+  }
+  size_t start = 0;
+  while (start < cleaned.size() && cleaned[start] == ' ') ++start;
+  size_t end = cleaned.size();
+  while (end > start && cleaned[end - 1] == ' ') --end;
+  return cleaned.substr(start, end - start);
+}
+
+void parsePlayerSample(JsonVariantConst sampleVar, std::vector<std::string>& out) {
+  out.clear();
+  if (!sampleVar.is<JsonArrayConst>()) return;
+  for (JsonVariantConst entry : sampleVar.as<JsonArrayConst>()) {
+    if (out.size() >= kMaxPlayerSample) break;
+    if (!entry.is<JsonObjectConst>()) continue;
+    JsonVariantConst nameVar = entry["name"];
+    if (!nameVar.is<const char*>()) continue;
+    std::string clean = sanitizePlayerName(nameVar.as<const char*>());
+    if (!clean.empty()) out.push_back(std::move(clean));
+  }
+}
 
 bool statusJson(Result& result) {
   JsonDocument json;
@@ -190,7 +331,9 @@ bool statusJson(Result& result) {
     }
     result.online = json["players"]["online"].as<int32_t>();
     result.maximum = json["players"]["max"].as<int32_t>();
+    parsePlayerSample(json["players"]["sample"], result.playerSample);
   }
+  decodeFavicon(json["favicon"], result.faviconPng);
   Motd motd(result);
   if (!motd.component(json["description"])) {
     result.error = "Unsupported MOTD type or size";
@@ -199,6 +342,16 @@ bool statusJson(Result& result) {
   return true;
 }
 
+}
+
+bool parseStatusJson(const std::string& rawJson, Result& result) {
+  result.lines.clear();
+  result.faviconPng.clear();
+  result.playerSample.clear();
+  result.rawJson = rawJson;
+  if (!statusJson(result)) return false;
+  result.statusReceived = true;
+  return true;
 }
 
 const char* stageName(Stage stage) {
